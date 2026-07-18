@@ -1,0 +1,5 @@
+# Dev/CI-only tooling — not needed at runtime, kept separate from requirements.txt
+# so production images stay minimal.
+
+pip-audit>=2.7.0
+safety>=3.0.0

@@ -1,0 +1,26 @@
+# --- UI ---
+streamlit>=1.30.0
+
+# --- Retrieval ---
+chromadb>=0.4.22
+duckduckgo-search>=6.1.0
+sentence-transformers>=2.3.0
+
+# --- LLM ---
+openai>=1.30.0
+google-genai>=0.3.0
+
+# --- Config & schemas ---
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+python-dotenv>=1.0.1
+
+# --- Observability ---
+structlog>=24.1.0
+
+# --- Caching ---
+diskcache>=5.6.3
+
+# --- Testing (dev) ---
+pytest>=8.0.0
+pytest-mock>=3.12.0

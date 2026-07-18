@@ -1,0 +1,105 @@
+"""
+Quiz generation orchestration (generation layer, not the service layer).
+
+This is the only module allowed to touch raw LLM output. It:
+1. Builds the versioned prompt from compressed context.
+2. Calls the LLM client (JSON mode).
+3. Validates the response against Question/Quiz schemas.
+4. On JSON/schema failure, tries the legacy fallback text parser once.
+5. On total failure, raises SchemaValidationError — the service layer
+   (M5) decides what the user sees; this layer never fabricates a Quiz.
+
+quiz_service.py (M5) is responsible for retrieval, merging, and context
+compression before calling generate_quiz — this module assumes it already
+has a compressed context string ready to prompt with.
+"""
+
+import json
+
+from pydantic import ValidationError
+
+from src.core.exceptions import SchemaValidationError
+from src.core.logging import get_logger
+from src.core.request_context import get_request_id
+from src.generation.fallback_parser import parse_legacy_text_format
+from src.generation.llm_client import LLMClient
+from src.generation.prompts import build_prompt
+from src.schemas.quiz import GenerationRequest, Question, Quiz
+
+logger = get_logger("quiz_generator")
+
+
+def _parse_and_validate_questions(raw_output: str) -> list[Question]:
+    """
+    Attempts JSON parsing + schema validation first, falls back to the
+    legacy text parser once if that fails. Raises SchemaValidationError
+    only if both paths fail.
+    """
+    try:
+        payload = json.loads(raw_output)
+        raw_questions = payload["questions"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        logger.warning("json_parse_failed_trying_fallback", error=str(exc))
+        raw_questions = parse_legacy_text_format(raw_output)
+        if not raw_questions:
+            raise SchemaValidationError(
+                raw_output, f"could not parse JSON or legacy format: {exc}"
+            ) from exc
+
+    try:
+        return [Question.model_validate(q) for q in raw_questions]
+    except ValidationError as exc:
+        raise SchemaValidationError(raw_output, f"question schema validation failed: {exc}") from exc
+
+
+def generate_quiz(
+    request: GenerationRequest,
+    compressed_context: str,
+    prompt_version: str,
+    llm_client: LLMClient,
+) -> Quiz:
+    """
+    Produces a fully validated Quiz for the given request and context.
+
+    Raises:
+        GenerationError: the LLM call itself failed (network, auth, etc.)
+        SchemaValidationError: the LLM's output could not be validated
+            even after the fallback parser.
+    """
+    if not compressed_context.strip():
+        logger.warning(
+            "generating_with_empty_context",
+            sport=request.sport.value,
+            difficulty=request.difficulty.value,
+        )
+
+    system_prompt, user_prompt = build_prompt(
+        version=prompt_version,
+        sport=request.sport,
+        difficulty=request.difficulty,
+        question_count=request.question_count,
+        context=compressed_context or "No context available.",
+    )
+
+    raw_output = llm_client.generate_json(system_prompt, user_prompt)
+    questions = _parse_and_validate_questions(raw_output)
+
+    if not questions:
+        raise SchemaValidationError(raw_output, "LLM returned zero valid questions.")
+
+    quiz = Quiz(
+        sport=request.sport,
+        difficulty=request.difficulty,
+        questions=questions,
+        prompt_version=prompt_version,
+        request_id=get_request_id(),
+    )
+
+    logger.info(
+        "quiz_generated",
+        sport=request.sport.value,
+        difficulty=request.difficulty.value,
+        question_count=len(questions),
+        prompt_version=prompt_version,
+    )
+    return quiz

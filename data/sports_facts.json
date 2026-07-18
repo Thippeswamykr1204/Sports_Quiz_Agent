@@ -1,0 +1,50 @@
+[
+  {
+    "sport": "Cricket",
+    "fact": "The first official cricket Test match was played in 1877 between Australia and England at the Melbourne Cricket Ground (MCG). Australia won by 45 runs."
+  },
+  {
+    "sport": "Cricket",
+    "fact": "The ICC Cricket World Cup was first held in 1975 in England. The West Indies won the inaugural tournament, defeating Australia in the final at Lord's."
+  },
+  {
+    "sport": "Cricket",
+    "fact": "India won the 1983 Cricket World Cup under the captaincy of Kapil Dev, defeating the West Indies in the final at Lord's, a result considered one of the greatest upsets in the sport's history."
+  },
+  {
+    "sport": "Football",
+    "fact": "The FIFA World Cup was first held in 1930. Uruguay hosted and won the tournament, defeating Argentina 4-2 in the final match in Montevideo."
+  },
+  {
+    "sport": "Football",
+    "fact": "Brazil has won the FIFA World Cup a record five times: 1958, 1962, 1970, 1994, and 2002."
+  },
+  {
+    "sport": "Football",
+    "fact": "The UEFA Champions League, established in 1955 as the European Cup, is the most prestigious club football competition in the world."
+  },
+  {
+    "sport": "Badminton",
+    "fact": "The Thomas Cup, established in 1948, is the premier international men's team badminton championship. India won its historic first title in 2022 by defeating Indonesia 3-0."
+  },
+  {
+    "sport": "Badminton",
+    "fact": "Badminton has been an official Olympic sport since the 1992 Barcelona Games."
+  },
+  {
+    "sport": "Tennis",
+    "fact": "The Wimbledon Championships, first held in 1877, is the oldest tennis tournament in the world and the only Grand Slam still played on grass."
+  },
+  {
+    "sport": "Tennis",
+    "fact": "The four Grand Slam tournaments are the Australian Open, the French Open (Roland Garros), Wimbledon, and the US Open."
+  },
+  {
+    "sport": "Basketball",
+    "fact": "The NBA was founded in 1946 as the Basketball Association of America (BAA), and adopted the name National Basketball Association in 1949."
+  },
+  {
+    "sport": "Basketball",
+    "fact": "The Boston Celtics and the Los Angeles Lakers are tied for the most NBA championships, with 17 titles each as of the 2023-24 season."
+  }
+]

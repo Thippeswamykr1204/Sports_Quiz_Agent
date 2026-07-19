@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     )
 
     # --- LLM provider ---
-# --- LLM provider ---
     google_api_key: str = Field(
         ...,
         description="Google Gemini API key."

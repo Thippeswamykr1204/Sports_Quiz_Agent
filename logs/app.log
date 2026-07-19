@@ -46,3 +46,7 @@
 [2m2026-07-19T15:39:41.515685Z[0m [[32m[1minfo     [0m] [1mquiz_request_completed        [0m [36mrequest_id[0m=[35m4bfcdb9db3f1[0m [36mtotal_duration_ms[0m=[35m6894.0[0m
 [2m2026-07-19T15:39:41.519746Z[0m [[32m[1minfo     [0m] [1mhistory_saved                 [0m [36mhistory_id[0m=[35m9a3790b8-9e5b-4217-b40a-95fa7287b38f[0m [36mrequest_id[0m=[35m4bfcdb9db3f1[0m [36msport[0m=[35mCricket[0m
 [2m2026-07-19T15:39:41.519968Z[0m [[32m[1minfo     [0m] [1maudit_event                   [0m [36mdifficulty[0m=[35mEasy[0m [36moutcome[0m=[35msuccess[0m [36mrequest_id[0m=[35m4bfcdb9db3f1[0m [36msport[0m=[35mCricket[0m
+[2m2026-07-19T16:04:50.300699Z[0m [[32m[1minfo     [0m] [1mquiz_request_started          [0m [36mdifficulty[0m=[35mEasy[0m [36mquestion_count[0m=[35m3[0m [36mrequest_id[0m=[35m9dd835f2234b[0m [36msport[0m=[35mCricket[0m
+[2m2026-07-19T16:04:50.304470Z[0m [[32m[1minfo     [0m] [1mcache_hit                     [0m [36mkey[0m=[35mquiz::Cricket::Easy::v2::2026-07-19[0m [36mrequest_id[0m=[35m9dd835f2234b[0m
+[2m2026-07-19T16:04:50.307204Z[0m [[32m[1minfo     [0m] [1mquiz_request_served_from_cache[0m [36mrequest_id[0m=[35m9dd835f2234b[0m
+[2m2026-07-19T16:04:50.307502Z[0m [[32m[1minfo     [0m] [1maudit_event                   [0m [36mdifficulty[0m=[35mEasy[0m [36moutcome[0m=[35mcache_hit[0m [36mrequest_id[0m=[35m9dd835f2234b[0m [36msport[0m=[35mCricket[0m

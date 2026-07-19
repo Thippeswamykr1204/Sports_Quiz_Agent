@@ -10,7 +10,7 @@ provenance for source-attributed UI rendering later.
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SourceType(str, Enum):
@@ -48,6 +48,23 @@ class WebSnippet(BaseModel):
     )
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     source_type: SourceType = SourceType.WEB
+
+    @field_validator("url")
+    @classmethod
+    def _only_http_https(cls, v: str | None) -> str | None:
+        """
+        Drops any URL that isn't http(s) rather than raising - a search
+        result with a weird/unsafe scheme (e.g. "javascript:...") should be
+        treated as "no link available", not fail the whole snippet. This
+        URL is later rendered as a real, clickable markdown link
+        (src/ui/components.py), so an unvalidated scheme here would be a
+        click-through XSS vector, not just a display glitch.
+        """
+        if v is None:
+            return None
+        if not (v.startswith("http://") or v.startswith("https://")):
+            return None
+        return v
 
 
 class MergedContext(BaseModel):

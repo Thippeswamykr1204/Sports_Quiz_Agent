@@ -13,6 +13,7 @@ persistent nav rather than tabs re-rendered from scratch each time.
 """
 
 import os
+import html
 from collections import Counter
 
 import streamlit as st
@@ -805,6 +806,7 @@ def _render_kb_chunk_card(chunk) -> None:
     """
     preview_limit = 220
     preview = chunk.text if len(chunk.text) <= preview_limit else chunk.text[:preview_limit].rstrip() + "…"
+    preview = html.escape(preview)
 
     score_html = ""
     if chunk.similarity_score is not None:
@@ -813,20 +815,20 @@ def _render_kb_chunk_card(chunk) -> None:
             f'<span class="quiz-badge quiz-badge-accent">{pct}% match</span>'
         )
 
-    tag_chips = "".join(f'<span class="quiz-chip">#{t}</span>' for t in chunk.tags)
-    date_chip = f'<span class="quiz-chip">{chunk.date}</span>' if chunk.date else ""
+    tag_chips = "".join(f'<span class="quiz-chip">#{html.escape(t)}</span>' for t in chunk.tags)
+    date_chip = f'<span class="quiz-chip">{html.escape(chunk.date)}</span>' if chunk.date else ""
 
     st.markdown(
         f"""
         <div class="quiz-card">
             <div style="display:flex;justify-content:space-between;align-items:center;">
-                <span style="font-family:var(--quiz-mono);font-size:0.75rem;opacity:0.6;">id: {chunk.embedding_id}</span>
+                <span style="font-family:var(--quiz-mono);font-size:0.75rem;opacity:0.6;">id: {html.escape(chunk.embedding_id)}</span>
                 {score_html}
             </div>
             <div style="margin:0.5rem 0 0.6rem;font-size:0.9rem;">{preview}</div>
             <div class="quiz-source-chips">
-                <span class="quiz-chip">{chunk.sport}</span>
-                <span class="quiz-chip">{chunk.source}</span>
+                <span class="quiz-chip">{html.escape(chunk.sport)}</span>
+                <span class="quiz-chip">{html.escape(chunk.source)}</span>
                 {date_chip}
                 {tag_chips}
             </div>

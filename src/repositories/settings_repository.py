@@ -7,10 +7,11 @@ explicitly overridden a default; absence of a row means "using the
 environment/config default", not "zero" or "off".
 """
 
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
+
+from src.core.db import sqlite_connection
 
 
 class SettingsRepository(Protocol):
@@ -31,10 +32,8 @@ class SQLiteSettingsRepository:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        return sqlite_connection(self._db_path)
 
     def get(self, key: str) -> str | None:
         with self._connect() as conn:

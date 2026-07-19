@@ -13,8 +13,11 @@ owns storage; app.py decides when to rebuild (via st.cache_resource.clear()).
 from dataclasses import dataclass
 
 from src.config.settings import Settings, get_settings
+from src.core.logging import get_logger
 from src.generation.prompts import PROMPTS
 from src.repositories.settings_repository import SettingsRepository
+
+logger = get_logger("settings_service")
 
 # Real, known Gemini model identifiers - not an exhaustive live catalog
 # (that would need a network call to Google's model-listing API), but a
@@ -50,6 +53,28 @@ class SettingsService:
         self._repository = repository
         self._env_settings = env_settings or get_settings()
 
+    # --- typed-read helpers -------------------------------------------------
+
+    def _get_float(self, key: str, default: float) -> float:
+        stored = self._repository.get(key)
+        if stored is None:
+            return default
+        try:
+            return float(stored)
+        except ValueError:
+            logger.warning("corrupted_setting_value_ignored", key=key, value=stored)
+            return default
+
+    def _get_int(self, key: str, default: int) -> int:
+        stored = self._repository.get(key)
+        if stored is None:
+            return default
+        try:
+            return int(stored)
+        except ValueError:
+            logger.warning("corrupted_setting_value_ignored", key=key, value=stored)
+            return default
+
     # --- individual typed getters/setters ---------------------------------
 
     def get_theme(self) -> str:
@@ -65,22 +90,19 @@ class SettingsService:
         self._repository.set(_KEY_MODEL, value)
 
     def get_temperature(self) -> float:
-        stored = self._repository.get(_KEY_TEMPERATURE)
-        return float(stored) if stored is not None else self._env_settings.llm_temperature
+        return self._get_float(_KEY_TEMPERATURE, self._env_settings.llm_temperature)
 
     def set_temperature(self, value: float) -> None:
         self._repository.set(_KEY_TEMPERATURE, str(value))
 
     def get_max_questions(self) -> int:
-        stored = self._repository.get(_KEY_MAX_QUESTIONS)
-        return int(stored) if stored is not None else 6
+        return self._get_int(_KEY_MAX_QUESTIONS, 6)
 
     def set_max_questions(self, value: int) -> None:
         self._repository.set(_KEY_MAX_QUESTIONS, str(value))
 
     def get_confidence_threshold(self) -> float:
-        stored = self._repository.get(_KEY_CONFIDENCE_THRESHOLD)
-        return float(stored) if stored is not None else 0.5
+        return self._get_float(_KEY_CONFIDENCE_THRESHOLD, 0.5)
 
     def set_confidence_threshold(self, value: float) -> None:
         self._repository.set(_KEY_CONFIDENCE_THRESHOLD, str(value))
@@ -94,8 +116,7 @@ class SettingsService:
         self._repository.set(_KEY_PROMPT_VERSION, value)
 
     def get_cache_ttl_hours(self) -> float:
-        stored = self._repository.get(_KEY_CACHE_TTL_HOURS)
-        return float(stored) if stored is not None else self._env_settings.cache_ttl_seconds / 3600
+        return self._get_float(_KEY_CACHE_TTL_HOURS, self._env_settings.cache_ttl_seconds / 3600)
 
     def set_cache_ttl_hours(self, value: float) -> None:
         self._repository.set(_KEY_CACHE_TTL_HOURS, str(value))

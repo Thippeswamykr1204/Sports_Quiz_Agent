@@ -13,11 +13,12 @@ only generates quizzes without answering them), every consumer of this
 repository must show "not enough data yet", never a fabricated number.
 """
 
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
+
+from src.core.db import sqlite_connection
 
 
 @dataclass(frozen=True)
@@ -46,10 +47,8 @@ class SQLiteAttemptRepository:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        return sqlite_connection(self._db_path)
 
     def record(self, request_id: str, sport: str, difficulty: str, question_index: int, is_correct: bool) -> None:
         with self._connect() as conn:

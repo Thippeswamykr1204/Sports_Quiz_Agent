@@ -7,6 +7,7 @@ services/). Keeping this separation means the UI can be redesigned
 without touching the pipeline, and vice versa.
 """
 
+import html
 from typing import Callable
 
 import streamlit as st
@@ -114,7 +115,8 @@ def render_transparency_panel(trace) -> None:
             st.markdown('<div class="quiz-eyebrow" style="margin-top:1rem;">Retrieved context (top documents)</div>', unsafe_allow_html=True)
             for i, item in enumerate(trace.retrieved_items, start=1):
                 pct = round(item.relevance_score * 100)
-                title = f"[{item.label}]({item.url})" if item.url else item.label
+                safe_label = html.escape(item.label)
+                title = f"[{safe_label}]({html.escape(item.url)})" if item.url else safe_label
                 st.markdown(
                     f"""
                     <div class="quiz-card" style="padding:0.7rem 0.9rem;margin-bottom:0.5rem;">
@@ -125,7 +127,7 @@ def render_transparency_panel(trace) -> None:
                         <div class="quiz-confidence-bar-track" style="max-width:none;margin-top:0.4rem;">
                             <div class="quiz-confidence-bar-fill" style="width:{pct}%;"></div>
                         </div>
-                        <div style="font-size:0.8rem;opacity:0.75;margin-top:0.5rem;">{item.excerpt}</div>
+                        <div style="font-size:0.8rem;opacity:0.75;margin-top:0.5rem;">{html.escape(item.excerpt)}</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -157,7 +159,7 @@ def render_source_chips(question: Question) -> None:
     chips_html = ""
     for source in question.sources:
         label = "Local KB" if source.source_type == SourceType.LOCAL_KB else source.label
-        chips_html += f'<span class="quiz-chip">{label}</span>'
+        chips_html += f'<span class="quiz-chip">{html.escape(label)}</span>'
 
     st.markdown(f'<div class="quiz-source-chips">{chips_html}</div>', unsafe_allow_html=True)
 
@@ -175,7 +177,7 @@ def render_question_card(
     """
     st.markdown('<div class="quiz-card">', unsafe_allow_html=True)
     st.markdown(
-        f'<div class="quiz-card-question">Q{index}. {question.question} '
+        f'<div class="quiz-card-question">Q{index}. {html.escape(question.question)} '
         f'{render_confidence_badge(question.confidence)}</div>',
         unsafe_allow_html=True,
     )

@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Protocol
 
+from src.core.db import sqlite_connection
 from src.core.logging import get_logger
 from src.schemas.quiz import Quiz
 
@@ -112,10 +113,8 @@ class SQLiteHistoryRepository:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        return sqlite_connection(self._db_path)
 
     def save(self, quiz: Quiz, chunks_used: int | None = None, sources_count: int | None = None) -> str:
         history_id = str(uuid.uuid4())
@@ -166,8 +165,13 @@ class SQLiteHistoryRepository:
             clauses.append("confidence_avg >= ?")
             params.append(filters.min_confidence)
         if filters.search_text:
-            clauses.append("payload_json LIKE ?")
-            params.append(f"%{filters.search_text}%")
+            escaped = (
+                filters.search_text.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            clauses.append("payload_json LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         # sort_column/sort_order are whitelisted above, never user-interpolated raw.

@@ -19,6 +19,7 @@ from src.repositories.history_repository import SQLiteHistoryRepository
 from src.repositories.web_repository import DuckDuckGoWebRepository
 from src.services.analytics_service import AnalyticsService
 from src.services.history_service import HistoryService
+from src.services.knowledge_service import KnowledgeService
 from src.services.quiz_service import QuizService
 from src.ui import state
 from src.ui.theme import THEME_CSS
@@ -60,6 +61,7 @@ def build_service() -> QuizService:
         attempt_repository=attempt_repository,
         metrics=metrics,
     )
+    knowledge_service = KnowledgeService(fact_repository=fact_repository)
 
     return QuizService(
         fact_repository=fact_repository,
@@ -75,6 +77,7 @@ def build_service() -> QuizService:
         attempt_repository=attempt_repository,
         analytics_service=analytics_service,
         metrics=metrics,
+        knowledge_service=knowledge_service,
     )
 
 

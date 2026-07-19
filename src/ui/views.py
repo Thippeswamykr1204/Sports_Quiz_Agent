@@ -12,7 +12,6 @@ standard single-page pattern - no client routing, no URL, but a real
 persistent nav rather than tabs re-rendered from scratch each time.
 """
 
-import json
 from collections import Counter
 
 import streamlit as st
@@ -22,6 +21,7 @@ from src.core.exceptions import GenerationError, NoContextAvailableError, Schema
 from src.repositories.history_repository import HistoryEntry
 from src.schemas.quiz import Difficulty, GenerationRequest, Quiz, Sport
 from src.services.history_service import HistoryService
+from src.services.knowledge_service import KnowledgeService
 from src.services.quiz_service import QuizService
 from src.ui import state
 from src.ui.components import (
@@ -94,7 +94,7 @@ def render_router(service: QuizService, sport: Sport, difficulty: Difficulty, qu
     elif section == "Analytics":
         _render_analytics(service)
     elif section == "Knowledge Base":
-        _render_knowledge_base()
+        _render_knowledge_base(service)
     elif section == "Settings":
         _render_settings()
     elif section == "About":
@@ -646,32 +646,182 @@ def _render_analytics_recent_activity(analytics) -> None:
 # Knowledge Base — reads the real seed file, not a placeholder
 # ---------------------------------------------------------------------------
 
-def _render_knowledge_base() -> None:
-    st.title("Knowledge Base")
-    settings = get_settings()
-    st.caption(f"Seed file: `{settings.sports_facts_path}` · retrieval top-k: {settings.local_retrieval_top_k}")
+# ---------------------------------------------------------------------------
+# Knowledge Base Explorer — search/browse the real vector store, not the
+# raw seed file. Doesn't expose collection name, persist path, distance
+# metric, or raw embedding vectors — only the embedding id (opaque
+# handle), real similarity scores, and stored metadata.
+# ---------------------------------------------------------------------------
+
+_KB_PAGE_SIZE = 8
+
+
+def _render_knowledge_base(service: QuizService) -> None:
+    st.title("Knowledge Base Explorer")
+    knowledge = service.get_knowledge_service()
+
+    if knowledge is None:
+        render_error_state("Knowledge Base Explorer isn't configured for this deployment.")
+        return
 
     try:
-        with open(settings.sports_facts_path, "r", encoding="utf-8") as fh:
-            facts = json.load(fh)
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
-        render_error_state(f"Could not read knowledge base file: {exc}")
+        options = knowledge.filter_options()
+    except Exception as exc:
+        render_error_state(f"Could not read the knowledge base: {exc}")
         return
 
-    if not facts:
-        render_empty_state(title="Knowledge base is empty", body="No seed facts found.", icon="📚")
+    st.caption(f"{len(options['sports'])} sports · {len(options['sources'])} sources · {len(options['tags'])} tags indexed")
+
+    query_text = st.text_input(
+        "Search knowledge",
+        key="kb_query",
+        placeholder="e.g. '1983 world cup' — semantic search over embeddings, not just keyword match",
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        sport_filter = st.selectbox("Sport", options=["All"] + options["sports"], key="kb_sport_filter")
+    with col2:
+        source_filter = st.selectbox("Source", options=["All"] + options["sources"], key="kb_source_filter")
+    with col3:
+        tag_filter = st.selectbox("Tag", options=["All"] + options["tags"], key="kb_tag_filter") if options["tags"] else "All"
+        if not options["tags"]:
+            st.caption("No tags in this KB yet")
+    with col4:
+        date_range = st.text_input("Date (YYYY-MM-DD or range a..b)", key="kb_date_filter", placeholder="not set")
+
+    date_from, date_to = _parse_kb_date_filter(date_range)
+
+    filter_signature = (query_text, sport_filter, source_filter, tag_filter, date_range)
+    if st.session_state.get("kb_filter_signature") != filter_signature:
+        st.session_state["kb_filter_signature"] = filter_signature
+        st.session_state["kb_page"] = 1
+
+    sport_arg = None if sport_filter == "All" else sport_filter
+    source_arg = None if source_filter == "All" else source_filter
+    tag_arg = None if tag_filter == "All" else tag_filter
+
+    st.write("")
+
+    if query_text.strip():
+        _render_kb_search_results(knowledge, query_text, sport_arg, source_arg, tag_arg, date_from, date_to)
+    else:
+        _render_kb_browse_results(knowledge, sport_arg, source_arg, tag_arg, date_from, date_to)
+
+
+def _parse_kb_date_filter(raw: str) -> tuple[str | None, str | None]:
+    """Accepts 'YYYY-MM-DD' or 'YYYY-MM-DD..YYYY-MM-DD'. Anything else is ignored (no filter)."""
+    raw = raw.strip()
+    if not raw:
+        return None, None
+    if ".." in raw:
+        start, _, end = raw.partition("..")
+        return (start.strip() or None), (end.strip() or None)
+    return raw, raw
+
+
+def _render_kb_search_results(
+    knowledge: "KnowledgeService", query_text: str, sport, source, tag, date_from, date_to
+) -> None:
+    st.markdown('<div class="quiz-eyebrow">Search results — ranked by real embedding similarity</div>', unsafe_allow_html=True)
+    try:
+        chunks = knowledge.search(
+            query_text, sport=sport, source=source, tag=tag, date_from=date_from, date_to=date_to, limit=20
+        )
+    except Exception as exc:
+        render_error_state(f"Search failed: {exc}")
         return
 
-    sports = sorted({f.get("sport", "Unknown") for f in facts})
-    chosen = st.selectbox("Filter by sport", options=["All"] + sports)
+    if not chunks:
+        render_empty_state(title="No matches", body="Try a different query or loosen the filters.", icon="🔍")
+        return
 
-    for fact in facts:
-        if chosen != "All" and fact.get("sport") != chosen:
-            continue
-        st.markdown('<div class="quiz-card">', unsafe_allow_html=True)
-        st.markdown(f"**{fact.get('sport', 'Unknown')}**")
-        st.caption(fact.get("text") or fact.get("fact") or json.dumps(fact))
-        st.markdown("</div>", unsafe_allow_html=True)
+    for chunk in chunks:
+        _render_kb_chunk_card(chunk)
+
+
+def _render_kb_browse_results(knowledge: "KnowledgeService", sport, source, tag, date_from, date_to) -> None:
+    page = st.session_state.get("kb_page", 1)
+    result = knowledge.browse(
+        sport=sport, source=source, tag=tag, date_from=date_from, date_to=date_to,
+        page=page, page_size=_KB_PAGE_SIZE,
+    )
+
+    st.markdown(
+        f'<div class="quiz-eyebrow">Browse — {result.total_count} chunks match these filters</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not result.chunks:
+        render_empty_state(
+            title="No chunks match these filters",
+            body="Loosen a filter, or search instead of browsing.",
+            icon="📚",
+        )
+        return
+
+    for chunk in result.chunks:
+        _render_kb_chunk_card(chunk)
+
+    st.write("")
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col1:
+        if st.button("← Prev", disabled=page <= 1, use_container_width=True):
+            st.session_state["kb_page"] = page - 1
+            st.rerun()
+    with col2:
+        st.markdown(
+            f"<div style='text-align:center;opacity:0.7;font-size:0.85rem;padding-top:0.4rem;'>"
+            f"Page {result.page} of {result.total_pages}</div>",
+            unsafe_allow_html=True,
+        )
+    with col3:
+        if st.button("Next →", disabled=page >= result.total_pages, use_container_width=True):
+            st.session_state["kb_page"] = page + 1
+            st.rerun()
+
+
+def _render_kb_chunk_card(chunk) -> None:
+    """
+    Developer-tool-style chunk card: monospace embedding id, similarity
+    bar (search mode only), metadata chips, truncated preview with an
+    expander for the full document — never the raw embedding vector.
+    """
+    preview_limit = 220
+    preview = chunk.text if len(chunk.text) <= preview_limit else chunk.text[:preview_limit].rstrip() + "…"
+
+    score_html = ""
+    if chunk.similarity_score is not None:
+        pct = round(chunk.similarity_score * 100)
+        score_html = (
+            f'<span class="quiz-badge quiz-badge-accent">{pct}% match</span>'
+        )
+
+    tag_chips = "".join(f'<span class="quiz-chip">#{t}</span>' for t in chunk.tags)
+    date_chip = f'<span class="quiz-chip">{chunk.date}</span>' if chunk.date else ""
+
+    st.markdown(
+        f"""
+        <div class="quiz-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-family:var(--quiz-mono);font-size:0.75rem;opacity:0.6;">id: {chunk.embedding_id}</span>
+                {score_html}
+            </div>
+            <div style="margin:0.5rem 0 0.6rem;font-size:0.9rem;">{preview}</div>
+            <div class="quiz-source-chips">
+                <span class="quiz-chip">{chunk.sport}</span>
+                <span class="quiz-chip">{chunk.source}</span>
+                {date_chip}
+                {tag_chips}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if len(chunk.text) > preview_limit:
+        with st.expander("View full document"):
+            st.write(chunk.text)
 
 
 # ---------------------------------------------------------------------------

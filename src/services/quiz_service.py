@@ -17,6 +17,7 @@ import time
 from src.core.cache import QuizCache
 from src.core.exceptions import NoContextAvailableError, RateLimitExceededError, RetrievalError
 from src.core.logging import get_logger
+from src.core.metrics import ServiceMetrics
 from src.core.rate_limiter import RateLimiter
 from src.core.request_context import request_scope
 from src.generation.context_compressor import compress_context
@@ -121,6 +122,54 @@ class QuizService:
         self._cache_ttl_seconds = cache_ttl_seconds
         self._local_top_k = local_top_k
         self._web_top_k = web_top_k
+        self._metrics = ServiceMetrics()
+
+    def get_metrics(self) -> ServiceMetrics:
+        """Real, process-lifetime counters - see src/core/metrics.py."""
+        return self._metrics
+
+    def get_kb_size(self) -> int | None:
+        """Real fact count from the vector store, or None if it can't be reached."""
+        try:
+            return self._fact_repository.count()
+        except Exception:
+            return None
+
+    def health_check(self) -> dict[str, tuple[str, str]]:
+        """
+        Returns {component: (status, detail)} for Home/Health Status cards.
+
+        status is one of "ok", "degraded", "unknown" - never fabricated.
+        Components this app can genuinely probe cheaply get a real check;
+        components it can't (a live Gemini call costs quota/latency on
+        every dashboard render) are marked "unknown" with a note, per the
+        "don't fake data" rule, rather than shown as a fake green light.
+        """
+        results: dict[str, tuple[str, str]] = {}
+
+        try:
+            count = self._fact_repository.is_seeded()
+            results["Vector Database"] = ("ok", "Connected, seeded" if count else "Connected, empty")
+        except Exception as exc:
+            results["Vector Database"] = ("degraded", f"Unreachable: {exc}")
+
+        if self._cache is not None:
+            results["Cache"] = ("ok", "Disk cache initialized")
+        else:
+            results["Cache"] = ("degraded", "No cache configured")
+
+        # Gemini: checking API key presence is real and cheap; a live
+        # completion call is not done here (would cost quota/latency on
+        # every page load). Future Enhancement: a periodic background
+        # ping (e.g. every N minutes) instead of per-request.
+        results["Gemini"] = (
+            "unknown",
+            "Client configured — liveness not probed per request (see health_check docstring)",
+        )
+
+        results["System"] = ("ok", f"Uptime {int(self._metrics.uptime_seconds)}s")
+
+        return results
 
     def generate(self, request: GenerationRequest) -> Quiz:
         """
@@ -149,6 +198,7 @@ class QuizService:
                 if cached is not None:
                     logger.info("quiz_request_served_from_cache", request_id=request_id)
                     _audit(request_id, request, outcome="cache_hit")
+                    self._metrics.record_cache_hit()
                     return cached
 
             facts = self._retrieve_local(request)
@@ -205,6 +255,7 @@ class QuizService:
                 "quiz_request_completed",
                 total_duration_ms=round((time.monotonic() - pipeline_start) * 1000, 1),
             )
+            self._metrics.record_fresh_generation((time.monotonic() - pipeline_start) * 1000)
             _audit(request_id, request, outcome="success")
             return quiz
 

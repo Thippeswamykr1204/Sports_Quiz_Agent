@@ -13,6 +13,7 @@ persistent nav rather than tabs re-rendered from scratch each time.
 """
 
 import json
+from collections import Counter
 
 import streamlit as st
 
@@ -82,7 +83,7 @@ def render_router(service: QuizService, sport: Sport, difficulty: Difficulty, qu
     section = state.get_active_section()
 
     if section == "Home":
-        _render_home()
+        _render_home(service)
     elif section == "Generate Quiz":
         _render_generate(sport, difficulty, question_count)
     elif section == "Quiz History":
@@ -96,14 +97,14 @@ def render_router(service: QuizService, sport: Sport, difficulty: Difficulty, qu
     elif section == "About":
         _render_about()
     else:
-        _render_home()
+        _render_home(service)
 
 
 # ---------------------------------------------------------------------------
 # Home
 # ---------------------------------------------------------------------------
 
-def _render_home() -> None:
+def _render_home(service: QuizService) -> None:
     st.markdown('<div class="quiz-gradient-bg" style="padding: 1.6rem 1.6rem 0.2rem; border-radius: 16px;">', unsafe_allow_html=True)
     st.markdown('<div class="quiz-eyebrow">Retrieval-grounded quiz generation</div>', unsafe_allow_html=True)
     st.title("Sports Quiz Agent")
@@ -114,39 +115,125 @@ def _render_home() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
     st.write("")
 
+    _render_todays_statistics(service)
+    st.write("")
+
+    col_left, col_right = st.columns([3, 2])
+    with col_left:
+        _render_recent_activity()
+    with col_right:
+        _render_quick_actions()
+
+    st.write("")
+    _render_health_status(service)
+
+
+def _render_todays_statistics(service: QuizService) -> None:
+    """
+    All-real numbers. "Today's" is honestly process-lifetime (see
+    src/core/metrics.py) since there's no persistence layer distinguishing
+    calendar days yet — flagged there as a Future Enhancement rather than
+    faked here with a made-up "today" filter.
+    """
+    st.markdown('<div class="quiz-eyebrow">Today\'s statistics</div>', unsafe_allow_html=True)
+
+    metrics = service.get_metrics()
     history = state.get_history()
-    total_questions = sum(len(q.questions) for q in history)
+    all_questions = [q for quiz in history for q in quiz.questions]
+
     avg_conf = (
-        round(100 * sum(qq.confidence for q in history for qq in q.questions) / total_questions)
-        if total_questions
-        else 0
+        f"{round(100 * sum(q.confidence for q in all_questions) / len(all_questions))}%"
+        if all_questions
+        else "—"
     )
-    sports_covered = len({q.sport.value for q in history})
+    avg_gen = (
+        f"{metrics.avg_generation_ms / 1000:.1f}s" if metrics.avg_generation_ms is not None else "—"
+    )
+    hit_rate = (
+        f"{round(metrics.cache_hit_rate * 100)}%" if metrics.cache_hit_rate is not None else "—"
+    )
+    kb_size = service.get_kb_size()
 
     render_stat_row(
         [
-            ("Quizzes this session", str(len(history))),
-            ("Questions generated", str(total_questions)),
-            ("Avg. confidence", f"{avg_conf}%" if total_questions else "—"),
-            ("Sports covered", str(sports_covered)),
+            ("Total quizzes", str(metrics.total_quizzes_served)),
+            ("Avg. generation time", avg_gen),
+            ("Avg. confidence", avg_conf),
+            ("Cache hit rate", hit_rate),
+            ("Knowledge base size", str(kb_size) if kb_size is not None else "unavailable"),
         ]
     )
-    st.write("")
+    st.caption(
+        "Counters are per-server-process since app start, not calendar-day scoped yet "
+        "(see Future Enhancement note in src/core/metrics.py)."
+    )
 
-    quiz = state.get_current_quiz()
-    if quiz is None:
+
+def _render_recent_activity() -> None:
+    st.markdown('<div class="quiz-eyebrow">Recent activity</div>', unsafe_allow_html=True)
+    history = state.get_history()
+
+    if not history:
         render_empty_state(
-            title="No quiz yet this session",
-            body="Go to Generate Quiz in the sidebar to create your first one.",
-            icon="⚡",
+            title="No activity yet",
+            body="Generated quizzes will appear here for the rest of this session.",
+            icon="🕘",
         )
         return
 
-    st.markdown('<div class="quiz-eyebrow" style="margin-top:0.5rem;">Most recent quiz</div>', unsafe_allow_html=True)
-    render_quiz_header(quiz)
-    if st.button("Open in Generate Quiz →"):
+    sport_counts = Counter(q.sport.value for q in history)
+    favorite_sport, favorite_count = sport_counts.most_common(1)[0]
+
+    render_stat_row(
+        [
+            ("Favorite sport", f"{favorite_sport} ({favorite_count})"),
+            ("Most attempted sport", favorite_sport),
+        ]
+    )
+    st.caption("\"Attempted\" currently means \"generated\" — per-question attempt tracking isn't persisted yet.")
+
+    st.write("")
+    for quiz in history[:5]:
+        st.markdown(
+            f'<div class="quiz-history-item">{quiz.sport.value} — {quiz.difficulty.value} · '
+            f'{len(quiz.questions)}Q · {quiz.generated_at.strftime("%H:%M:%S UTC")}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_quick_actions() -> None:
+    st.markdown('<div class="quiz-eyebrow">Quick actions</div>', unsafe_allow_html=True)
+    if st.button("⚡ Generate Quiz", use_container_width=True):
         state.set_active_section("Generate Quiz")
         st.rerun()
+    if st.button("🕘 View History", use_container_width=True):
+        state.set_active_section("Quiz History")
+        st.rerun()
+    if st.button("📚 Search Knowledge Base", use_container_width=True):
+        state.set_active_section("Knowledge Base")
+        st.rerun()
+
+
+def _render_health_status(service: QuizService) -> None:
+    st.markdown('<div class="quiz-eyebrow">Health status</div>', unsafe_allow_html=True)
+    health = service.health_check()
+
+    dot = {"ok": "#14b8a6", "degraded": "#ef4444", "unknown": "#a3a3a3"}
+    cols = st.columns(len(health))
+    for col, (component, (status, detail)) in zip(cols, health.items()):
+        with col:
+            st.markdown(
+                f"""
+                <div class="quiz-stat-card">
+                    <div style="display:flex;align-items:center;gap:0.4rem;font-weight:600;font-size:0.9rem;">
+                        <span style="width:8px;height:8px;border-radius:999px;background:{dot[status]};"></span>
+                        {component}
+                    </div>
+                    <div class="quiz-stat-label">{detail}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 
 # ---------------------------------------------------------------------------

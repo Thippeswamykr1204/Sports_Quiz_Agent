@@ -36,6 +36,10 @@ class FactRepository(Protocol):
         """Returns True if the underlying store already has data."""
         ...
 
+    def count(self) -> int:
+        """Returns the number of facts currently stored (for KB-size stat cards)."""
+        ...
+
     def seed(self, seed_path: Path) -> int:
         """Loads and inserts seed data if the store is empty. Returns count inserted."""
         ...
@@ -77,6 +81,12 @@ class ChromaFactRepository:
             return self._collection.count() > 0
         except Exception as exc:  # pragma: no cover - defensive, chroma internals
             raise RetrievalError("local_kb", f"failed to check collection state: {exc}") from exc
+
+    def count(self) -> int:
+        try:
+            return self._collection.count()
+        except Exception as exc:  # pragma: no cover - defensive, chroma internals
+            raise RetrievalError("local_kb", f"failed to count collection: {exc}") from exc
 
     def seed(self, seed_path: Path) -> int:
         if self.is_seeded():

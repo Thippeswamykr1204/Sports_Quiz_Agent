@@ -14,6 +14,7 @@ here as a Future Enhancement to persist if this needs to survive a
 restart or scale to multiple workers).
 """
 
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -87,19 +88,35 @@ class TraceBuilder:
 
 
 class TraceStore:
-    """Bounded in-memory {request_id: PipelineTrace} - see module docstring."""
+    """
+    Bounded in-memory {request_id: PipelineTrace} - see module docstring.
+
+    NOTE ON CONCURRENCY: QuizService (and therefore this store) is built
+    once via st.cache_resource and shared by every concurrent Streamlit
+    session in the same server process - it is NOT one-instance-per-user.
+    Multiple browser tabs/users hitting the same worker can call put()/get()
+    from different threads at the same time, so the internal dict/list are
+    protected by a lock rather than assuming single-threaded access. This
+    doesn't make traces private between users (request_id is an
+    unguessable UUID, which is the actual isolation mechanism) - it only
+    prevents the dict/list themselves from being corrupted by concurrent
+    mutation.
+    """
 
     def __init__(self, max_entries: int = 50) -> None:
         self._max_entries = max_entries
         self._traces: dict[str, PipelineTrace] = {}
         self._order: list[str] = []
+        self._lock = threading.Lock()
 
     def put(self, trace: PipelineTrace) -> None:
-        self._traces[trace.request_id] = trace
-        self._order.append(trace.request_id)
-        while len(self._order) > self._max_entries:
-            oldest = self._order.pop(0)
-            self._traces.pop(oldest, None)
+        with self._lock:
+            self._traces[trace.request_id] = trace
+            self._order.append(trace.request_id)
+            while len(self._order) > self._max_entries:
+                oldest = self._order.pop(0)
+                self._traces.pop(oldest, None)
 
     def get(self, request_id: str) -> PipelineTrace | None:
-        return self._traces.get(request_id)
+        with self._lock:
+            return self._traces.get(request_id)

@@ -20,7 +20,7 @@ import streamlit as st
 from src.config.settings import get_settings
 from src.core.exceptions import GenerationError, NoContextAvailableError, SchemaValidationError
 from src.repositories.history_repository import HistoryEntry
-from src.schemas.quiz import Difficulty, GenerationRequest, Quiz, Sport
+from src.schemas.quiz import Difficulty, GenerationRequest, Sport
 from src.services.history_service import HistoryService
 from src.services.knowledge_service import KnowledgeService
 from src.services.quiz_service import QuizService
@@ -242,7 +242,7 @@ def _render_health_status(service: QuizService) -> None:
 
     dot = {"ok": "#14b8a6", "degraded": "#ef4444", "unknown": "#a3a3a3"}
     cols = st.columns(len(health))
-    for col, (component, (status, detail)) in zip(cols, health.items()):
+    for col, (component, (status, detail)) in zip(cols, health.items(), strict=True):
         with col:
             st.markdown(
                 f"""

@@ -260,7 +260,7 @@ class ChromaFactRepository:
         metadatas = results.get("metadatas", [])
 
         matched: list[KnowledgeChunk] = []
-        for chunk_id, doc, meta in zip(ids, documents, metadatas):
+        for chunk_id, doc, meta in zip(ids, documents, metadatas, strict=True):
             if self._matches_python_side_filters(meta, doc, filters):
                 matched.append(self._row_to_chunk(chunk_id, doc, meta, similarity_score=None))
 
@@ -289,7 +289,7 @@ class ChromaFactRepository:
         distances = results.get("distances", [[]])[0] if results.get("distances") else []
 
         chunks: list[KnowledgeChunk] = []
-        for idx, (chunk_id, doc, meta) in enumerate(zip(ids, documents, metadatas)):
+        for idx, (chunk_id, doc, meta) in enumerate(zip(ids, documents, metadatas, strict=True)):
             if not self._matches_python_side_filters(meta, doc, filters):
                 continue
             distance = distances[idx] if idx < len(distances) else 1.0

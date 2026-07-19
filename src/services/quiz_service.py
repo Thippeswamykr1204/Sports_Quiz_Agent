@@ -172,7 +172,8 @@ class QuizService:
         """Real fact count from the vector store, or None if it can't be reached."""
         try:
             return self._fact_repository.count()
-        except Exception:
+        except Exception as exc:
+            logger.warning("kb_size_check_failed", error=str(exc))
             return None
 
     def get_history_service(self) -> HistoryService | None:
@@ -214,11 +215,142 @@ class QuizService:
 
         return results
 
+    def _try_serve_from_cache(
+        self, request: GenerationRequest, request_id: str, builder: TraceBuilder
+    ) -> Quiz | None:
+        """Returns the cached Quiz, or None on a miss/no cache configured."""
+        if self._cache is None:
+            return None
+
+        cached = self._cache.get(request.sport, request.difficulty, self._prompt_version)
+        if cached is None:
+            return None
+
+        logger.info("quiz_request_served_from_cache", request_id=request_id)
+        _audit(request_id, request, outcome="cache_hit")
+        self._metrics.record_cache_hit()
+
+        # get_trace() is always looked up by the returned quiz's OWN
+        # request_id (its original generation's id, not this call's
+        # transient one) - so if that quiz already has a real trace from
+        # when it was actually generated, that's the correct, more useful
+        # thing to show and must not be overwritten by a same-key
+        # "served from cache" stub every time it's replayed from cache.
+        # Only synthesize a stub trace if none exists yet (e.g. this
+        # quiz's original trace already fell out of TraceStore's bounded
+        # history).
+        if self._trace_store.get(cached.request_id) is not None:
+            return cached
+
+        for stage_name in ("Retrieval", "Ranking", "Context Building", "Prompt Generation", "Gemini Response", "JSON Parsing"):
+            builder.skip_stage(stage_name, "Served from cache")
+
+        builder.trace.confidence_score = sum(q.confidence for q in cached.questions) / len(cached.questions)
+        builder.trace.generation_time_ms = cached.generation_time_ms
+        builder.trace.sources_used = sorted({s.label for q in cached.questions for s in q.sources})
+        with builder.stage("Completed", detail="Served from cache"):
+            pass
+        builder.trace.request_id = cached.request_id
+        self._trace_store.put(builder.trace)
+        return cached
+
+    def _retrieve_and_rank(
+        self, request: GenerationRequest, request_id: str, builder: TraceBuilder
+    ) -> MergedContext:
+        """
+        Runs retrieval + ranking, populates the trace's retrieved_items, and
+        returns the merged context. Raises NoContextAvailableError (after
+        finalizing and storing the trace) if both sources came back empty.
+        """
+        with builder.stage("Retrieval", detail="Local KB + web search, run in sequence"):
+            facts = self._retrieve_local(request)
+            snippets = self._retrieve_web(request)
+
+        if not facts and not snippets:
+            _audit(request_id, request, outcome="no_context_available")
+            with builder.stage("Completed", detail="Failed - no context available"):
+                pass
+            self._trace_store.put(builder.trace)
+            raise NoContextAvailableError(
+                "pipeline", "both local and web retrieval returned no usable context."
+            )
+
+        merge_start = time.monotonic()
+        with builder.stage("Ranking", detail="Merge local + web, dedupe, sort by relevance"):
+            merged = merge_and_deduplicate(facts, snippets)
+        logger.info("merge_stage_completed", duration_ms=round((time.monotonic() - merge_start) * 1000, 1))
+
+        for item in sorted(merged.items, key=lambda i: i.relevance_score, reverse=True):
+            if isinstance(item, RetrievedFact):
+                builder.trace.retrieved_items.append(
+                    RetrievedItem(
+                        label=f"Local KB — {item.sport}",
+                        source_type="local_kb",
+                        relevance_score=item.relevance_score,
+                        excerpt=item.text,
+                    )
+                )
+            elif isinstance(item, WebSnippet):
+                builder.trace.retrieved_items.append(
+                    RetrievedItem(
+                        label=item.title,
+                        source_type="web",
+                        relevance_score=item.relevance_score,
+                        excerpt=item.text,
+                        url=item.url,
+                    )
+                )
+
+        return merged
+
+    def _finalize_and_persist(
+        self,
+        quiz: Quiz,
+        merged: MergedContext,
+        request_id: str,
+        request: GenerationRequest,
+        builder: TraceBuilder,
+        pipeline_start: float,
+    ) -> Quiz:
+        """Caches, timestamps, records metrics/history/trace, and audits a successful generation."""
+        if self._cache is not None:
+            self._cache.set(request.sport, request.difficulty, self._prompt_version, quiz, self._cache_ttl_seconds)
+
+        logger.info("quiz_request_completed", total_duration_ms=round((time.monotonic() - pipeline_start) * 1000, 1))
+        duration_ms = (time.monotonic() - pipeline_start) * 1000
+        self._metrics.record_fresh_generation(duration_ms)
+        quiz = quiz.model_copy(update={"generation_time_ms": duration_ms})
+
+        builder.trace.confidence_score = sum(q.confidence for q in quiz.questions) / len(quiz.questions)
+        builder.trace.generation_time_ms = duration_ms
+        builder.trace.sources_used = sorted({s.label for q in quiz.questions for s in q.sources})
+        with builder.stage("Completed"):
+            pass
+        self._trace_store.put(builder.trace)
+
+        if self._history_service is not None:
+            try:
+                self._history_service.record(
+                    quiz,
+                    chunks_used=builder.trace.chunks_used,
+                    sources_count=len(quiz.questions[0].sources) if quiz.questions[0].sources else 0,
+                )
+            except Exception as exc:  # pragma: no cover - history is best-effort
+                logger.warning("history_persist_failed", error=str(exc))
+
+        _audit(request_id, request, outcome="success")
+        return quiz
+
     def generate(self, request: GenerationRequest) -> Quiz:
         """
         Runs the full pipeline for a single GenerationRequest and returns a
         validated Quiz. Wraps the whole call in a request_scope so every
         log line across every layer carries the same request_id.
+
+        Broken into named stage-helpers (_try_serve_from_cache,
+        _retrieve_and_rank, _finalize_and_persist) purely to keep this
+        method's own complexity down - behavior is unchanged from the
+        single-method version this was refactored from.
         """
         with request_scope() as request_id:
             pipeline_start = time.monotonic()
@@ -240,71 +372,11 @@ class QuizService:
                     _audit(request_id, request, outcome="rate_limited")
                     raise
 
-            if self._cache is not None:
-                cached = self._cache.get(request.sport, request.difficulty, self._prompt_version)
-                if cached is not None:
-                    logger.info("quiz_request_served_from_cache", request_id=request_id)
-                    _audit(request_id, request, outcome="cache_hit")
-                    self._metrics.record_cache_hit()
-                    builder.skip_stage("Retrieval", "Served from cache - retrieval not run")
-                    builder.skip_stage("Ranking", "Served from cache - ranking not run")
-                    builder.skip_stage("Context Building", "Served from cache - compression not run")
-                    builder.skip_stage("Prompt Generation", "Served from cache")
-                    builder.skip_stage("Gemini Response", "Served from cache")
-                    builder.skip_stage("JSON Parsing", "Served from cache")
-                    builder.trace.confidence_score = (
-                        sum(q.confidence for q in cached.questions) / len(cached.questions)
-                    )
-                    builder.trace.generation_time_ms = cached.generation_time_ms
-                    builder.trace.sources_used = sorted(
-                        {s.label for q in cached.questions for s in q.sources}
-                    )
-                    with builder.stage("Completed", detail="Served from cache"):
-                        pass
-                    self._trace_store.put(builder.trace)
-                    return cached
+            cached = self._try_serve_from_cache(request, request_id, builder)
+            if cached is not None:
+                return cached
 
-            with builder.stage("Retrieval", detail="Local KB + web search, run in sequence") as _:
-                facts = self._retrieve_local(request)
-                snippets = self._retrieve_web(request)
-
-            if not facts and not snippets:
-                _audit(request_id, request, outcome="no_context_available")
-                with builder.stage("Completed", detail="Failed - no context available"):
-                    pass
-                self._trace_store.put(builder.trace)
-                raise NoContextAvailableError(
-                    "pipeline", "both local and web retrieval returned no usable context."
-                )
-
-            merge_start = time.monotonic()
-            with builder.stage("Ranking", detail="Merge local + web, dedupe, sort by relevance"):
-                merged = merge_and_deduplicate(facts, snippets)
-            logger.info(
-                "merge_stage_completed",
-                duration_ms=round((time.monotonic() - merge_start) * 1000, 1),
-            )
-
-            for item in sorted(merged.items, key=lambda i: i.relevance_score, reverse=True):
-                if isinstance(item, RetrievedFact):
-                    builder.trace.retrieved_items.append(
-                        RetrievedItem(
-                            label=f"Local KB — {item.sport}",
-                            source_type="local_kb",
-                            relevance_score=item.relevance_score,
-                            excerpt=item.text,
-                        )
-                    )
-                elif isinstance(item, WebSnippet):
-                    builder.trace.retrieved_items.append(
-                        RetrievedItem(
-                            label=item.title,
-                            source_type="web",
-                            relevance_score=item.relevance_score,
-                            excerpt=item.text,
-                            url=item.url,
-                        )
-                    )
+            merged = self._retrieve_and_rank(request, request_id, builder)
 
             compress_start = time.monotonic()
             with builder.stage("Context Building", detail="Compress merged context to token budget"):
@@ -332,47 +404,9 @@ class QuizService:
                 self._trace_store.put(builder.trace)
                 raise
             quiz = _attribute_sources(quiz, merged)
-            logger.info(
-                "generation_stage_completed",
-                duration_ms=round((time.monotonic() - generation_start) * 1000, 1),
-            )
+            logger.info("generation_stage_completed", duration_ms=round((time.monotonic() - generation_start) * 1000, 1))
 
-            if self._cache is not None:
-                self._cache.set(
-                    request.sport,
-                    request.difficulty,
-                    self._prompt_version,
-                    quiz,
-                    self._cache_ttl_seconds,
-                )
-
-            logger.info(
-                "quiz_request_completed",
-                total_duration_ms=round((time.monotonic() - pipeline_start) * 1000, 1),
-            )
-            duration_ms = (time.monotonic() - pipeline_start) * 1000
-            self._metrics.record_fresh_generation(duration_ms)
-            quiz = quiz.model_copy(update={"generation_time_ms": duration_ms})
-
-            builder.trace.confidence_score = sum(q.confidence for q in quiz.questions) / len(quiz.questions)
-            builder.trace.generation_time_ms = duration_ms
-            builder.trace.sources_used = sorted({s.label for q in quiz.questions for s in q.sources})
-            with builder.stage("Completed"):
-                pass
-            self._trace_store.put(builder.trace)
-
-            if self._history_service is not None:
-                try:
-                    self._history_service.record(
-                        quiz,
-                        chunks_used=builder.trace.chunks_used,
-                        sources_count=len(quiz.questions[0].sources) if quiz.questions[0].sources else 0,
-                    )
-                except Exception as exc:  # pragma: no cover - history is best-effort
-                    logger.warning("history_persist_failed", error=str(exc))
-
-            _audit(request_id, request, outcome="success")
-            return quiz
+            return self._finalize_and_persist(quiz, merged, request_id, request, builder, pipeline_start)
 
     def _retrieve_local(self, request: GenerationRequest) -> list[RetrievedFact]:
         query = build_local_query(request.sport, request.difficulty)

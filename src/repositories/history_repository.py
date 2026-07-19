@@ -18,7 +18,6 @@ table buys nothing here and doubles the join complexity for a feature
 that's read far more than written).
 """
 
-import json
 import sqlite3
 import uuid
 from dataclasses import dataclass

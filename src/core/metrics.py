@@ -9,27 +9,39 @@ Enhancement below rather than faked with persistence this app doesn't
 have.
 """
 
+import threading
 import time
 from dataclasses import dataclass, field
 
 
 @dataclass
 class ServiceMetrics:
-    """Real, process-lifetime counters - no synthetic/mocked numbers."""
+    """
+    Real, process-lifetime counters - no synthetic/mocked numbers.
+
+    Shared across every concurrent Streamlit session in the process (see
+    the concurrency note on TraceStore in tracing.py - same caveat
+    applies here). `+=` is not atomic in general, so concurrent
+    record_cache_hit()/record_fresh_generation() calls from different
+    threads could lose an increment without a lock - one is used below.
+    """
 
     process_started_at: float = field(default_factory=time.monotonic)
     cache_hits: int = 0
     cache_misses: int = 0
     fresh_generations: int = 0
     total_generation_ms: float = 0.0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def record_cache_hit(self) -> None:
-        self.cache_hits += 1
+        with self._lock:
+            self.cache_hits += 1
 
     def record_fresh_generation(self, duration_ms: float) -> None:
-        self.cache_misses += 1
-        self.fresh_generations += 1
-        self.total_generation_ms += duration_ms
+        with self._lock:
+            self.cache_misses += 1
+            self.fresh_generations += 1
+            self.total_generation_ms += duration_ms
 
     @property
     def total_quizzes_served(self) -> int:

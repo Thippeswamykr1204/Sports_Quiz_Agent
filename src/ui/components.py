@@ -286,7 +286,7 @@ def render_stat_card(label: str, value: str) -> None:
 def render_stat_row(stats: list[tuple[str, str]]) -> None:
     """Renders a row of stat cards, one per (label, value) pair, via st.columns."""
     cols = st.columns(len(stats))
-    for col, (label, value) in zip(cols, stats):
+    for col, (label, value) in zip(cols, stats, strict=True):
         with col:
             render_stat_card(label, value)
 

@@ -43,6 +43,29 @@ _MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_quiz_history_generated_at ON quiz_history(generated_at);
         """,
     ),
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS quiz_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL,
+            sport TEXT NOT NULL,
+            difficulty TEXT NOT NULL,
+            question_index INTEGER NOT NULL,
+            is_correct INTEGER NOT NULL,
+            answered_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_quiz_attempts_sport ON quiz_attempts(sport);
+        CREATE INDEX IF NOT EXISTS idx_quiz_attempts_answered_at ON quiz_attempts(answered_at);
+        """,
+    ),
+    (
+        4,
+        """
+        ALTER TABLE quiz_history ADD COLUMN chunks_used INTEGER DEFAULT NULL;
+        ALTER TABLE quiz_history ADD COLUMN sources_count INTEGER DEFAULT NULL;
+        """,
+    ),
 ]
 
 

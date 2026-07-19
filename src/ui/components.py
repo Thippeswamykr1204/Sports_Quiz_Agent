@@ -7,6 +7,8 @@ services/). Keeping this separation means the UI can be redesigned
 without touching the pipeline, and vice versa.
 """
 
+from typing import Callable
+
 import streamlit as st
 
 from src.schemas.quiz import Question, Quiz
@@ -160,8 +162,17 @@ def render_source_chips(question: Question) -> None:
     st.markdown(f'<div class="quiz-source-chips">{chips_html}</div>', unsafe_allow_html=True)
 
 
-def render_question_card(question: Question, index: int) -> None:
-    """Renders one full question card: text, options, reveal, confidence, sources."""
+def render_question_card(
+    question: Question, index: int, on_answer_checked: Callable[[int, bool], None] | None = None
+) -> None:
+    """
+    Renders one full question card: text, options, reveal, confidence, sources.
+
+    on_answer_checked(question_index, is_correct), if provided, fires exactly
+    once per question per quiz (guarded by session_state, since Streamlit
+    reruns this whole function on every widget interaction) - this is the
+    hook Analytics' real score/accuracy data comes from.
+    """
     st.markdown('<div class="quiz-card">', unsafe_allow_html=True)
     st.markdown(
         f'<div class="quiz-card-question">Q{index}. {question.question} '
@@ -171,6 +182,7 @@ def render_question_card(question: Question, index: int) -> None:
 
     choice_key = f"choice_{index}"
     reveal_key = f"reveal_{index}"
+    recorded_key = f"attempt_recorded_{index}"
 
     option_labels = [f"{k}) {v}" for k, v in question.options.items()]
     selected = st.radio(
@@ -189,7 +201,8 @@ def render_question_card(question: Question, index: int) -> None:
             st.warning("Pick an option first.")
         else:
             selected_letter = selected.split(")")[0]
-            if selected_letter == question.correct_answer:
+            is_correct = selected_letter == question.correct_answer
+            if is_correct:
                 st.success(f"Correct! {question.explanation}")
                 st.toast("Correct answer", icon="✅")
             else:
@@ -198,6 +211,10 @@ def render_question_card(question: Question, index: int) -> None:
                     f"{question.explanation}"
                 )
                 st.toast("Not quite", icon="⚠️")
+
+            if on_answer_checked is not None and not st.session_state.get(recorded_key, False):
+                on_answer_checked(index, is_correct)
+                st.session_state[recorded_key] = True
 
     render_confidence_bar(question.confidence)
     render_source_chips(question)

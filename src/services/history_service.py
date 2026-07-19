@@ -17,9 +17,9 @@ class HistoryService:
     def __init__(self, repository: QuizHistoryRepository) -> None:
         self._repository = repository
 
-    def record(self, quiz: Quiz) -> str:
+    def record(self, quiz: Quiz, chunks_used: int | None = None, sources_count: int | None = None) -> str:
         """Persists a freshly generated quiz. Called once, from QuizService.generate()."""
-        return self._repository.save(quiz)
+        return self._repository.save(quiz, chunks_used=chunks_used, sources_count=sources_count)
 
     def search(
         self,

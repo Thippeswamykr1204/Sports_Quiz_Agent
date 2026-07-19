@@ -273,8 +273,20 @@ def _render_generate(service: QuizService, sport: Sport, difficulty: Difficulty,
         return
 
     render_quiz_header(quiz)
+    attempt_repo = service.get_attempt_repository()
+
+    def _record_attempt(question_index: int, is_correct: bool) -> None:
+        if attempt_repo is not None:
+            attempt_repo.record(
+                request_id=quiz.request_id,
+                sport=quiz.sport.value,
+                difficulty=quiz.difficulty.value,
+                question_index=question_index,
+                is_correct=is_correct,
+            )
+
     for i, question in enumerate(quiz.questions, start=1):
-        render_question_card(question, i)
+        render_question_card(question, i, on_answer_checked=_record_attempt)
 
     render_export_actions(quiz)
 
@@ -427,8 +439,20 @@ def _render_history_row(service: QuizService, history_service: HistoryService, e
         else:
             with st.container():
                 render_quiz_header(quiz)
+                attempt_repo = service.get_attempt_repository()
+
+                def _record_attempt(question_index: int, is_correct: bool, _quiz=quiz) -> None:
+                    if attempt_repo is not None:
+                        attempt_repo.record(
+                            request_id=_quiz.request_id,
+                            sport=_quiz.sport.value,
+                            difficulty=_quiz.difficulty.value,
+                            question_index=question_index,
+                            is_correct=is_correct,
+                        )
+
                 for i, question in enumerate(quiz.questions, start=1):
-                    render_question_card(question, i)
+                    render_question_card(question, i, on_answer_checked=_record_attempt)
                 trace = service.get_trace(quiz.request_id)
                 if trace is not None:
                     render_transparency_panel(trace)
@@ -460,18 +484,23 @@ def _confidence_badge_inline(confidence: float) -> str:
 # Analytics — derived only from real session history, nothing fabricated
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Analytics — real data via AnalyticsService; every section is one small
+# render function so each metric is independently swappable/testable.
+# ---------------------------------------------------------------------------
+
 def _render_analytics(service: QuizService) -> None:
     st.title("Analytics")
-    history_service = service.get_history_service()
+    analytics = service.get_analytics_service()
 
-    if history_service is None:
-        render_error_state("Quiz History persistence isn't configured for this deployment.")
+    if analytics is None:
+        render_error_state("Analytics isn't configured for this deployment (needs History + Attempts persistence).")
         return
 
-    entries = history_service.search(sort_by="generated_at", sort_order="desc", limit=1000)
-    st.caption(f"Derived from all {len(entries)} persisted quizzes.")
+    total = analytics.quizzes_generated_total()
+    st.caption(f"Derived from all {total} persisted quizzes and {analytics.total_attempts()} recorded answers.")
 
-    if not entries:
+    if total == 0:
         render_empty_state(
             title="Nothing to analyze yet",
             body="Generate a few quizzes and this page fills in with real numbers.",
@@ -479,31 +508,138 @@ def _render_analytics(service: QuizService) -> None:
         )
         return
 
-    total_questions = sum(e.question_count for e in entries)
-    avg_conf = round(100 * sum(e.confidence_avg * e.question_count for e in entries) / total_questions)
-    high_conf = sum(1 for e in entries if e.confidence_avg >= 0.75)
+    _render_analytics_summary_cards(analytics)
+    st.write("")
+    _render_analytics_progress_indicators(analytics)
+    st.write("")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        _render_analytics_trend(analytics, "daily")
+    with col_b:
+        _render_analytics_trend(analytics, "weekly")
+
+    col_c, col_d = st.columns(2)
+    with col_c:
+        _render_analytics_distribution(analytics, "sport")
+    with col_d:
+        _render_analytics_distribution(analytics, "difficulty")
+
+    st.write("")
+    _render_analytics_retrieval_stats(analytics)
+
+    st.write("")
+    col_e, col_f = st.columns(2)
+    with col_e:
+        _render_analytics_performance(analytics)
+    with col_f:
+        _render_analytics_recent_activity(analytics)
+
+
+def _render_analytics_summary_cards(analytics) -> None:
+    """Quizzes generated / avg score / avg latency — the top-line numbers."""
+    st.markdown('<div class="quiz-eyebrow">Summary</div>', unsafe_allow_html=True)
+
+    avg_conf = analytics.avg_confidence()
+    avg_latency = analytics.avg_latency_seconds()
+    accuracy = analytics.accuracy_overall()
 
     render_stat_row(
         [
-            ("Total quizzes", str(len(entries))),
-            ("Total questions", str(total_questions)),
-            ("Avg. confidence", f"{avg_conf}%"),
-            ("High-confidence quizzes", f"{high_conf}/{len(entries)}"),
+            ("Quizzes generated", str(analytics.quizzes_generated_total())),
+            ("Avg. LLM confidence", f"{round(avg_conf * 100)}%" if avg_conf is not None else "—"),
+            ("Avg. latency", f"{avg_latency:.1f}s" if avg_latency is not None else "—"),
+            (
+                "Avg. score (answers)",
+                f"{round(accuracy * 100)}%" if accuracy is not None else "not enough data",
+            ),
+        ]
+    )
+    if accuracy is None:
+        st.caption(
+            "\"Avg. score\" needs answered questions, not just generated ones — "
+            "answer some questions in Generate Quiz to populate this."
+        )
+
+
+def _render_analytics_progress_indicators(analytics) -> None:
+    st.markdown('<div class="quiz-eyebrow">Progress indicators</div>', unsafe_allow_html=True)
+
+    accuracy = analytics.accuracy_overall()
+    hit_rate = analytics.cache_hit_rate()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.caption(f"Overall accuracy — {round(accuracy * 100) if accuracy is not None else 0}%" + ("" if accuracy is not None else " (no answers recorded yet)"))
+        st.progress(accuracy if accuracy is not None else 0.0)
+    with col2:
+        st.caption(f"Cache hit rate (this process) — {round(hit_rate * 100) if hit_rate is not None else 0}%" + ("" if hit_rate is not None else " (no requests yet)"))
+        st.progress(hit_rate if hit_rate is not None else 0.0)
+
+
+def _render_analytics_trend(analytics, granularity: str) -> None:
+    label = "Daily trend" if granularity == "daily" else "Weekly trend"
+    st.markdown(f'<div class="quiz-eyebrow">{label}</div>', unsafe_allow_html=True)
+    points = analytics.daily_trend() if granularity == "daily" else analytics.weekly_trend()
+    st.bar_chart({p.label: p.count for p in points})
+
+
+def _render_analytics_distribution(analytics, by: str) -> None:
+    label = "Sports popularity" if by == "sport" else "Difficulty distribution"
+    st.markdown(f'<div class="quiz-eyebrow">{label}</div>', unsafe_allow_html=True)
+    data = analytics.sports_popularity() if by == "sport" else analytics.difficulty_distribution()
+    st.bar_chart(data)
+
+
+def _render_analytics_retrieval_stats(analytics) -> None:
+    st.markdown('<div class="quiz-eyebrow">Knowledge retrieval statistics</div>', unsafe_allow_html=True)
+    stats = analytics.retrieval_stats()
+
+    if stats["avg_chunks_used"] is None:
+        st.caption(
+            "No retrieval metadata recorded yet (quizzes generated before this feature "
+            "shipped don't have it — architecture is in place, new quizzes populate it)."
+        )
+        return
+
+    render_stat_row(
+        [
+            ("Avg. chunks retrieved", f"{stats['avg_chunks_used']:.1f}"),
+            ("Avg. sources cited", f"{stats['avg_sources_used']:.1f}"),
+            ("Data coverage", f"{round(stats['coverage'] * 100)}% of quizzes"),
         ]
     )
 
-    st.write("")
-    st.markdown('<div class="quiz-eyebrow">By sport</div>', unsafe_allow_html=True)
-    by_sport: dict[str, int] = {}
-    for e in entries:
-        by_sport[e.sport] = by_sport.get(e.sport, 0) + e.question_count
-    st.bar_chart(by_sport)
 
-    st.markdown('<div class="quiz-eyebrow" style="margin-top:1rem;">By difficulty</div>', unsafe_allow_html=True)
-    by_difficulty: dict[str, int] = {}
-    for e in entries:
-        by_difficulty[e.difficulty] = by_difficulty.get(e.difficulty, 0) + e.question_count
-    st.bar_chart(by_difficulty)
+def _render_analytics_performance(analytics) -> None:
+    st.markdown('<div class="quiz-eyebrow">Best performance / weakest category</div>', unsafe_allow_html=True)
+    best = analytics.best_performance()
+    worst = analytics.weakest_category()
+
+    if best is None:
+        render_empty_state(
+            title="Not enough data yet",
+            body="Answer questions across a few sports and this fills in with your strongest and weakest categories.",
+            icon="🏆",
+        )
+        return
+
+    render_stat_row(
+        [
+            ("Best: " + best.category, f"{round(best.accuracy * 100)}% ({best.attempts} answered)"),
+            ("Weakest: " + worst.category, f"{round(worst.accuracy * 100)}% ({worst.attempts} answered)"),
+        ]
+    )
+
+
+def _render_analytics_recent_activity(analytics) -> None:
+    st.markdown('<div class="quiz-eyebrow">Recent activity</div>', unsafe_allow_html=True)
+    for entry in analytics.recent_activity(limit=6):
+        st.markdown(
+            f'<div class="quiz-history-item">{entry.sport} — {entry.difficulty} · '
+            f'{entry.question_count}Q · {entry.generated_at.strftime("%Y-%m-%d %H:%M UTC")}</div>',
+            unsafe_allow_html=True,
+        )
 
 
 # ---------------------------------------------------------------------------

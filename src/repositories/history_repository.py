@@ -62,12 +62,14 @@ class HistoryEntry:
     prompt_version: str
     generated_at: datetime
     created_at: datetime
+    chunks_used: int | None = None
+    sources_count: int | None = None
 
 
 class QuizHistoryRepository(Protocol):
     """Interface the service layer depends on - never raw sqlite3 outside this file."""
 
-    def save(self, quiz: Quiz) -> str:
+    def save(self, quiz: Quiz, chunks_used: int | None = None, sources_count: int | None = None) -> str:
         """Persists a quiz, returns its history id."""
         ...
 
@@ -86,6 +88,7 @@ class QuizHistoryRepository(Protocol):
 
 
 def _row_to_entry(row: sqlite3.Row) -> HistoryEntry:
+    columns = row.keys()
     return HistoryEntry(
         id=row["id"],
         request_id=row["request_id"],
@@ -97,6 +100,8 @@ def _row_to_entry(row: sqlite3.Row) -> HistoryEntry:
         prompt_version=row["prompt_version"],
         generated_at=datetime.fromisoformat(row["generated_at"]),
         created_at=datetime.fromisoformat(row["created_at"]),
+        chunks_used=row["chunks_used"] if "chunks_used" in columns else None,
+        sources_count=row["sources_count"] if "sources_count" in columns else None,
     )
 
 
@@ -113,7 +118,7 @@ class SQLiteHistoryRepository:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def save(self, quiz: Quiz) -> str:
+    def save(self, quiz: Quiz, chunks_used: int | None = None, sources_count: int | None = None) -> str:
         history_id = str(uuid.uuid4())
         confidence_avg = sum(q.confidence for q in quiz.questions) / len(quiz.questions)
 
@@ -123,8 +128,8 @@ class SQLiteHistoryRepository:
                 INSERT INTO quiz_history (
                     id, request_id, sport, difficulty, question_count,
                     confidence_avg, generation_time_ms, prompt_version,
-                    generated_at, created_at, payload_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    generated_at, created_at, payload_json, chunks_used, sources_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     history_id,
@@ -138,6 +143,8 @@ class SQLiteHistoryRepository:
                     quiz.generated_at.isoformat(),
                     datetime.now(timezone.utc).isoformat(),
                     quiz.model_dump_json(),
+                    chunks_used,
+                    sources_count,
                 ),
             )
         logger.info("history_saved", history_id=history_id, sport=quiz.sport.value)

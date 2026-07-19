@@ -32,6 +32,7 @@ from src.ui.components import (
     render_question_card,
     render_quiz_header,
     render_stat_row,
+    render_transparency_panel,
 )
 
 
@@ -87,7 +88,7 @@ def render_router(service: QuizService, sport: Sport, difficulty: Difficulty, qu
     if section == "Home":
         _render_home(service)
     elif section == "Generate Quiz":
-        _render_generate(sport, difficulty, question_count)
+        _render_generate(service, sport, difficulty, question_count)
     elif section == "Quiz History":
         _render_history(service)
     elif section == "Analytics":
@@ -256,7 +257,7 @@ def _render_health_status(service: QuizService) -> None:
 # Generate Quiz (the original main flow)
 # ---------------------------------------------------------------------------
 
-def _render_generate(sport: Sport, difficulty: Difficulty, question_count: int) -> None:
+def _render_generate(service: QuizService, sport: Sport, difficulty: Difficulty, question_count: int) -> None:
     st.title("Generate Quiz")
     st.caption(f"{sport.value} · {difficulty.value} · {question_count} questions")
 
@@ -276,6 +277,16 @@ def _render_generate(sport: Sport, difficulty: Difficulty, question_count: int) 
         render_question_card(question, i)
 
     render_export_actions(quiz)
+
+    trace = service.get_trace(quiz.request_id)
+    if trace is not None:
+        render_transparency_panel(trace)
+    else:
+        st.caption(
+            "🔎 AI Transparency trace not available for this quiz (server restarted since "
+            "generation, or it was reopened from history) — traces are in-memory only, "
+            "see src/core/tracing.py."
+        )
 
 
 def handle_generation(
@@ -362,10 +373,10 @@ def _render_history(service: QuizService) -> None:
         return
 
     for entry in entries:
-        _render_history_row(history_service, entry)
+        _render_history_row(service, history_service, entry)
 
 
-def _render_history_row(history_service: HistoryService, entry: HistoryEntry) -> None:
+def _render_history_row(service: QuizService, history_service: HistoryService, entry: HistoryEntry) -> None:
     st.markdown('<div class="quiz-card">', unsafe_allow_html=True)
 
     gen_time = f"{entry.generation_time_ms / 1000:.1f}s" if entry.generation_time_ms else "cached/unknown"
@@ -418,6 +429,11 @@ def _render_history_row(history_service: HistoryService, entry: HistoryEntry) ->
                 render_quiz_header(quiz)
                 for i, question in enumerate(quiz.questions, start=1):
                     render_question_card(question, i)
+                trace = service.get_trace(quiz.request_id)
+                if trace is not None:
+                    render_transparency_panel(trace)
+                else:
+                    st.caption("🔎 AI Transparency trace not available (in-memory only, not persisted with history).")
                 if st.button("Open in Generate Quiz →", key=f"open_gen_{entry.id}"):
                     state.set_current_quiz(quiz)
                     state.set_active_section("Generate Quiz")

@@ -28,6 +28,108 @@ def render_confidence_badge(confidence: float) -> str:
     )
 
 
+def render_transparency_panel(trace) -> None:
+    """
+    AI Transparency Mode - collapsible pipeline trace panel.
+
+    trace is a src.core.tracing.PipelineTrace. Every field rendered here
+    is real (timed stage, measured similarity score, actual token count)
+    or explicitly labeled "not available" - nothing is a placeholder.
+    Doesn't import tracing directly to avoid a UI->core coupling beyond
+    what's needed; caller passes the object, this just renders it.
+    """
+    if trace is None:
+        return
+
+    status_dot = {"ok": "#14b8a6", "failed": "#ef4444", "skipped": "#a3a3a3"}
+
+    with st.expander("🔎 AI Transparency Mode — how this quiz was generated", expanded=False):
+        st.markdown('<div class="quiz-eyebrow">Pipeline</div>', unsafe_allow_html=True)
+        for stage in trace.stages:
+            color = status_dot.get(stage.status, "#a3a3a3")
+            duration = f"{stage.duration_ms:.0f}ms" if stage.status != "skipped" else "skipped"
+            st.markdown(
+                f"""
+                <div style="display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0;font-size:0.85rem;">
+                    <span style="width:8px;height:8px;border-radius:999px;background:{color};flex-shrink:0;"></span>
+                    <span style="font-weight:600;min-width:150px;">{stage.name}</span>
+                    <span style="opacity:0.55;font-family:var(--quiz-mono);font-size:0.78rem;">{duration}</span>
+                    <span style="opacity:0.6;font-size:0.78rem;">{stage.detail}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        st.divider()
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.markdown(
+                f'<div class="quiz-stat-value">{round(trace.confidence_score * 100) if trace.confidence_score is not None else "—"}%</div>'
+                '<div class="quiz-stat-label">Confidence score</div>',
+                unsafe_allow_html=True,
+            )
+        with col2:
+            gen_time = f"{trace.generation_time_ms / 1000:.1f}s" if trace.generation_time_ms else "—"
+            st.markdown(
+                f'<div class="quiz-stat-value">{gen_time}</div>'
+                '<div class="quiz-stat-label">Generation time</div>',
+                unsafe_allow_html=True,
+            )
+        with col3:
+            st.markdown(
+                f'<div class="quiz-stat-value">{trace.retry_count}</div>'
+                '<div class="quiz-stat-label">Retry count</div>',
+                unsafe_allow_html=True,
+            )
+        with col4:
+            st.markdown(
+                f'<div class="quiz-stat-value">{trace.chunks_used}</div>'
+                '<div class="quiz-stat-label">Chunks used</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.write("")
+        col5, col6 = st.columns(2)
+        with col5:
+            st.caption(f"Prompt version: `{trace.prompt_version}`")
+        with col6:
+            if trace.token_usage:
+                tu = trace.token_usage
+                st.caption(
+                    f"Token usage: {tu.get('prompt_tokens', '—')} prompt + "
+                    f"{tu.get('response_tokens', '—')} response = {tu.get('total_tokens', '—')} total"
+                )
+            else:
+                st.caption("Token usage: not reported by provider for this call")
+
+        if trace.sources_used:
+            st.markdown('<div class="quiz-eyebrow" style="margin-top:0.8rem;">Sources used</div>', unsafe_allow_html=True)
+            chips = "".join(f'<span class="quiz-chip">{s}</span>' for s in trace.sources_used)
+            st.markdown(f'<div class="quiz-source-chips">{chips}</div>', unsafe_allow_html=True)
+
+        if trace.retrieved_items:
+            st.markdown('<div class="quiz-eyebrow" style="margin-top:1rem;">Retrieved context (top documents)</div>', unsafe_allow_html=True)
+            for i, item in enumerate(trace.retrieved_items, start=1):
+                pct = round(item.relevance_score * 100)
+                title = f"[{item.label}]({item.url})" if item.url else item.label
+                st.markdown(
+                    f"""
+                    <div class="quiz-card" style="padding:0.7rem 0.9rem;margin-bottom:0.5rem;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <span style="font-weight:600;font-size:0.85rem;">[{i}] {title}</span>
+                            <span class="quiz-badge quiz-badge-accent">{pct}% match</span>
+                        </div>
+                        <div class="quiz-confidence-bar-track" style="max-width:none;margin-top:0.4rem;">
+                            <div class="quiz-confidence-bar-fill" style="width:{pct}%;"></div>
+                        </div>
+                        <div style="font-size:0.8rem;opacity:0.75;margin-top:0.5rem;">{item.excerpt}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
 def render_confidence_bar(confidence: float) -> None:
     """Renders a compact confidence indicator (0.0-1.0) as a labeled bar."""
     percent = round(confidence * 100)

@@ -40,7 +40,8 @@ def build_service() -> QuizService:
     llm_client = GeminiLLMClient(
         api_key=settings.google_api_key,
         model=settings.gemini_model,
-        temperature=settings.llm_temperature
+        temperature=settings.llm_temperature,
+        max_retries=settings.llm_max_retries,
     )
 
     cache = DiskQuizCache(cache_dir=settings.cache_dir)

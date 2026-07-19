@@ -15,6 +15,18 @@ _ERROR_KEY = "current_error"
 _HISTORY_KEY = "recent_quizzes"
 _MAX_HISTORY = 8
 
+_SECTION_KEY = "active_section"
+_DEFAULT_SECTION = "Home"
+NAV_SECTIONS = (
+    ("Home", "🏠"),
+    ("Generate Quiz", "⚡"),
+    ("Quiz History", "🕘"),
+    ("Analytics", "📊"),
+    ("Knowledge Base", "📚"),
+    ("Settings", "⚙️"),
+    ("About", "ℹ️"),
+)
+
 
 def init_state() -> None:
     """Call once at the top of app.py to ensure all keys exist."""
@@ -24,6 +36,16 @@ def init_state() -> None:
         st.session_state[_ERROR_KEY] = None
     if _HISTORY_KEY not in st.session_state:
         st.session_state[_HISTORY_KEY] = []
+    if _SECTION_KEY not in st.session_state:
+        st.session_state[_SECTION_KEY] = _DEFAULT_SECTION
+
+
+def get_active_section() -> str:
+    return st.session_state.get(_SECTION_KEY, _DEFAULT_SECTION)
+
+
+def set_active_section(section: str) -> None:
+    st.session_state[_SECTION_KEY] = section
 
 
 def get_current_quiz() -> Quiz | None:

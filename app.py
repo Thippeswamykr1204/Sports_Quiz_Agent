@@ -16,10 +16,10 @@ from src.repositories.web_repository import DuckDuckGoWebRepository
 from src.services.quiz_service import QuizService
 from src.ui import state
 from src.ui.theme import THEME_CSS
-from src.ui.views import handle_generation, render_main, render_sidebar
+from src.ui.views import handle_generation, render_router, render_sidebar
 from src.generation.gemini_client import GeminiLLMClient
 
-st.set_page_config(page_title="Sports Quiz Agent", page_icon="🏆", layout="centered")
+st.set_page_config(page_title="Sports Quiz Agent", page_icon="🏆", layout="wide")
 st.markdown(THEME_CSS, unsafe_allow_html=True)
 
 
@@ -64,7 +64,7 @@ def main() -> None:
     if generate_clicked:
         handle_generation(service, sport, difficulty, question_count)
 
-    render_main(service, sport, difficulty, question_count)
+    render_router(service, sport, difficulty, question_count)
 
 
 if __name__ == "__main__":

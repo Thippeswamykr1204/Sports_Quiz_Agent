@@ -13,6 +13,21 @@ from src.schemas.quiz import Question, Quiz
 from src.schemas.retrieval import SourceType
 
 
+def render_confidence_badge(confidence: float) -> str:
+    """Returns badge HTML for a confidence tier (high/med/low) — used inline in cards."""
+    if confidence >= 0.75:
+        tier, dot = "High confidence", "#14b8a6"
+    elif confidence >= 0.45:
+        tier, dot = "Medium confidence", "#eab308"
+    else:
+        tier, dot = "Low confidence", "#ef4444"
+    return (
+        f'<span class="quiz-badge quiz-badge-accent">'
+        f'<span style="width:6px;height:6px;border-radius:999px;background:{dot};"></span>'
+        f"{tier}</span>"
+    )
+
+
 def render_confidence_bar(confidence: float) -> None:
     """Renders a compact confidence indicator (0.0-1.0) as a labeled bar."""
     percent = round(confidence * 100)
@@ -47,7 +62,8 @@ def render_question_card(question: Question, index: int) -> None:
     """Renders one full question card: text, options, reveal, confidence, sources."""
     st.markdown('<div class="quiz-card">', unsafe_allow_html=True)
     st.markdown(
-        f'<div class="quiz-card-question">Q{index}. {question.question}</div>',
+        f'<div class="quiz-card-question">Q{index}. {question.question} '
+        f'{render_confidence_badge(question.confidence)}</div>',
         unsafe_allow_html=True,
     )
 
@@ -73,11 +89,13 @@ def render_question_card(question: Question, index: int) -> None:
             selected_letter = selected.split(")")[0]
             if selected_letter == question.correct_answer:
                 st.success(f"Correct! {question.explanation}")
+                st.toast("Correct answer", icon="✅")
             else:
                 st.error(
                     f"Not quite — correct answer is {question.correct_answer}. "
                     f"{question.explanation}"
                 )
+                st.toast("Not quite", icon="⚠️")
 
     render_confidence_bar(question.confidence)
     render_source_chips(question)
@@ -111,15 +129,55 @@ def render_loading_skeleton(question_count: int = 3) -> None:
         )
 
 
-def render_empty_state() -> None:
-    """Shown before the user has generated their first quiz."""
+def render_empty_state(
+    title: str = "Ready when you are",
+    body: str = (
+        "Pick a sport and difficulty in the sidebar, then generate a quiz. "
+        "Every question is grounded in a local knowledge base and live web "
+        "search — no invented facts."
+    ),
+    icon: str = "🎯",
+) -> None:
+    """Generic empty state — reused across Home / History / Analytics / KB tabs."""
     st.markdown(
-        """
-        ### Ready when you are
-        Pick a sport and difficulty in the sidebar, then generate a quiz.
-        Every question is grounded in a local knowledge base and live web
-        search — no invented facts.
-        """
+        f"""
+        <div class="quiz-glass" style="padding: 2.2rem 1.6rem; text-align: center; margin-bottom: 1rem;">
+            <div style="font-size: 1.8rem; margin-bottom: 0.5rem;">{icon}</div>
+            <div style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.4rem;">{title}</div>
+            <div style="font-size: 0.88rem; opacity: 0.7; max-width: 440px; margin: 0 auto;">{body}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_stat_card(label: str, value: str) -> None:
+    """One KPI tile — used in Home/Analytics stat rows."""
+    st.markdown(
+        f"""
+        <div class="quiz-stat-card">
+            <div class="quiz-stat-value">{value}</div>
+            <div class="quiz-stat-label">{label}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_stat_row(stats: list[tuple[str, str]]) -> None:
+    """Renders a row of stat cards, one per (label, value) pair, via st.columns."""
+    cols = st.columns(len(stats))
+    for col, (label, value) in zip(cols, stats):
+        with col:
+            render_stat_card(label, value)
+
+
+def render_nav_item(label: str, icon: str, active: bool = False) -> None:
+    """Renders one sidebar nav row's label markup (button itself is a real st.button)."""
+    css_class = "quiz-nav-item quiz-nav-item-active" if active else "quiz-nav-item"
+    st.markdown(
+        f'<div class="{css_class}"><span>{icon}</span><span>{label}</span></div>',
+        unsafe_allow_html=True,
     )
 
 

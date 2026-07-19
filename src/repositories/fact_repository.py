@@ -90,6 +90,10 @@ class FactRepository(Protocol):
         """Returns real, derived-from-data values for each filterable field."""
         ...
 
+    def clear(self) -> int:
+        """Deletes all stored facts. Returns the number of entries removed. Use with seed() to rebuild."""
+        ...
+
 
 def _load_seed_facts(seed_path: Path) -> list[SeedFact]:
     """Reads and validates the raw JSON seed file, raising DataLoadError on failure."""
@@ -309,3 +313,14 @@ class ChromaFactRepository:
         tags = sorted({t for m in metadatas for t in (m.get("tags") or "").split(",") if t})
 
         return {"sports": sports, "sources": sources, "tags": tags}
+
+    def clear(self) -> int:
+        try:
+            existing = self._collection.get(include=[])
+            ids = existing.get("ids", [])
+            if ids:
+                self._collection.delete(ids=ids)
+        except Exception as exc:
+            raise RetrievalError("local_kb", f"failed to clear collection: {exc}") from exc
+        logger.info("local_kb_cleared", count=len(ids))
+        return len(ids)

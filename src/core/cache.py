@@ -37,6 +37,10 @@ class QuizCache(Protocol):
     ) -> None:
         ...
 
+    def clear(self) -> int:
+        """Clears all cached quizzes. Returns the number of entries removed."""
+        ...
+
 
 def _build_key(sport: Sport, difficulty: Difficulty, prompt_version: str) -> str:
     today = date.today().isoformat()
@@ -69,3 +73,9 @@ class DiskQuizCache:
         key = _build_key(sport, difficulty, prompt_version)
         self._cache.set(key, quiz.model_dump_json(), expire=ttl_seconds)
         logger.info("cache_set", key=key, ttl_seconds=ttl_seconds)
+
+    def clear(self) -> int:
+        count = len(self._cache)
+        self._cache.clear()
+        logger.info("cache_cleared", entries_removed=count)
+        return count

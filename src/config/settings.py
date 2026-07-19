@@ -63,6 +63,10 @@ class Settings(BaseSettings):
         default=Path("./data/quiz_history.db"),
         description="SQLite file backing the persistent Quiz History feature.",
     )
+    log_file_path: Path = Field(
+        default=Path("./logs/app.log"),
+        description="Where structured logs are additionally written, for Settings > Export Logs.",
+    )
 
     # --- Observability ---
     log_level: str = Field(default="INFO")

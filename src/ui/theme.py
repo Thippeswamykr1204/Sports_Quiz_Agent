@@ -249,3 +249,24 @@ THEME_CSS = """
 }
 </style>
 """
+
+# Applied on top of THEME_CSS only when Settings > Theme = "Light".
+# Most of THEME_CSS already uses `color-mix(in srgb, currentColor X%,
+# transparent)` for card/panel backgrounds, which is theme-agnostic (it
+# derives from whatever text color Streamlit's own light/dark mode sets)
+# - this override only needs to touch the handful of values that were
+# tuned by eye against a dark background specifically.
+LIGHT_THEME_OVERRIDES_CSS = """
+<style>
+:root {
+    --quiz-border: rgba(15, 23, 42, 0.12);
+    --quiz-border-strong: rgba(15, 23, 42, 0.24);
+    --quiz-accent-soft: rgba(20, 184, 166, 0.10);
+}
+.quiz-gradient-bg {
+    background:
+        radial-gradient(1200px 400px at 10% -10%, rgba(20, 184, 166, 0.08), transparent 60%),
+        radial-gradient(800px 300px at 90% 0%, rgba(99, 102, 241, 0.06), transparent 60%);
+}
+</style>
+"""

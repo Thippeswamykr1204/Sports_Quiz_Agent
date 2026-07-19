@@ -12,6 +12,7 @@ standard single-page pattern - no client routing, no URL, but a real
 persistent nav rather than tabs re-rendered from scratch each time.
 """
 
+import os
 from collections import Counter
 
 import streamlit as st
@@ -23,6 +24,8 @@ from src.schemas.quiz import Difficulty, GenerationRequest, Quiz, Sport
 from src.services.history_service import HistoryService
 from src.services.knowledge_service import KnowledgeService
 from src.services.quiz_service import QuizService
+from src.services.settings_service import AVAILABLE_MODELS, SettingsService
+from src.version import __version__
 from src.ui import state
 from src.ui.components import (
     render_empty_state,
@@ -40,7 +43,7 @@ from src.ui.components import (
 # Sidebar: identity + navigation + generation controls
 # ---------------------------------------------------------------------------
 
-def render_sidebar() -> tuple[Sport, Difficulty, int, bool]:
+def render_sidebar(max_questions: int = 6) -> tuple[Sport, Difficulty, int, bool]:
     """Renders sidebar nav + quiz controls. Returns the current generation selections."""
     st.sidebar.markdown(
         '<div class="quiz-eyebrow">Sports Quiz Agent</div>',
@@ -66,7 +69,9 @@ def render_sidebar() -> tuple[Sport, Difficulty, int, bool]:
     difficulty = st.sidebar.select_slider(
         "Difficulty", options=list(Difficulty), format_func=lambda d: d.value
     )
-    question_count = st.sidebar.slider("Number of questions", min_value=1, max_value=6, value=3)
+    question_count = st.sidebar.slider(
+        "Number of questions", min_value=1, max_value=max(max_questions, 1), value=min(3, max_questions)
+    )
 
     generate_clicked = st.sidebar.button(
         "Generate Fresh Quiz", use_container_width=True, type="primary"
@@ -96,7 +101,7 @@ def render_router(service: QuizService, sport: Sport, difficulty: Difficulty, qu
     elif section == "Knowledge Base":
         _render_knowledge_base(service)
     elif section == "Settings":
-        _render_settings()
+        _render_settings(service)
     elif section == "About":
         _render_about()
     else:
@@ -273,6 +278,17 @@ def _render_generate(service: QuizService, sport: Sport, difficulty: Difficulty,
         return
 
     render_quiz_header(quiz)
+
+    settings_service = service.get_settings_service()
+    if settings_service is not None:
+        threshold = settings_service.get_confidence_threshold()
+        below = [i for i, q in enumerate(quiz.questions, start=1) if q.confidence < threshold]
+        if below:
+            st.warning(
+                f"Question(s) {', '.join(str(i) for i in below)} scored below your confidence "
+                f"threshold ({round(threshold * 100)}%) — set in Settings."
+            )
+
     attempt_repo = service.get_attempt_repository()
 
     def _record_attempt(question_index: int, is_correct: bool) -> None:
@@ -828,29 +844,165 @@ def _render_kb_chunk_card(chunk) -> None:
 # Settings — real config values, read-only (change via .env, not fake toggles)
 # ---------------------------------------------------------------------------
 
-def _render_settings() -> None:
+def _render_settings(service: QuizService) -> None:
     st.title("Settings")
-    st.caption("Read-only view of the active configuration. Change values via `.env` and restart.")
+    settings_service = service.get_settings_service()
 
-    settings = get_settings()
+    if settings_service is None:
+        render_error_state("Settings persistence isn't configured for this deployment.")
+        return
 
-    st.markdown('<div class="quiz-eyebrow">Model</div>', unsafe_allow_html=True)
-    render_stat_row(
-        [
-            ("Model", settings.gemini_model),
-            ("Temperature", str(settings.llm_temperature)),
-            ("Prompt version", settings.active_prompt_version),
-        ]
+    if settings_service.has_any_overrides():
+        st.caption("Some values below are overridden from your saved Settings; unset ones use the deployment's `.env` defaults.")
+    else:
+        st.caption("Showing deployment defaults from `.env` — nothing overridden yet.")
+
+    resolved = settings_service.resolve()
+
+    _render_settings_theme(settings_service, resolved)
+    st.divider()
+    _render_settings_model(settings_service, resolved)
+    st.divider()
+    _render_settings_cache(service, settings_service, resolved)
+    st.divider()
+    _render_settings_kb_management(service)
+    st.divider()
+    _render_settings_export_logs()
+    st.divider()
+    _render_settings_app_info()
+
+
+def _render_settings_theme(settings_service: SettingsService, resolved) -> None:
+    st.markdown('<div class="quiz-eyebrow">Theme</div>', unsafe_allow_html=True)
+    theme = st.radio("Appearance", options=["Dark", "Light"], index=0 if resolved.theme == "Dark" else 1, horizontal=True)
+    if theme != resolved.theme:
+        settings_service.set_theme(theme)
+        st.rerun()
+
+
+def _render_settings_model(settings_service: SettingsService, resolved) -> None:
+    st.markdown('<div class="quiz-eyebrow">Model & generation</div>', unsafe_allow_html=True)
+    st.caption("Changing these rebuilds the generation pipeline — click Apply to take effect.")
+
+    model_options = AVAILABLE_MODELS if resolved.model in AVAILABLE_MODELS else [resolved.model] + AVAILABLE_MODELS
+    model = st.selectbox("Model selection", options=model_options, index=model_options.index(resolved.model))
+    temperature = st.slider("Temperature", min_value=0.0, max_value=1.5, value=resolved.temperature, step=0.05)
+    max_questions = st.slider("Maximum questions per quiz", min_value=1, max_value=10, value=resolved.max_questions)
+    confidence_threshold = st.slider(
+        "Confidence threshold", min_value=0.0, max_value=1.0, value=resolved.confidence_threshold, step=0.05,
+        help="Questions below this confidence are flagged with a warning banner in Generate Quiz.",
+    )
+    prompt_version = st.selectbox(
+        "Prompt version",
+        options=settings_service.available_prompt_versions(),
+        index=settings_service.available_prompt_versions().index(resolved.prompt_version),
     )
 
-    st.write("")
-    st.markdown('<div class="quiz-eyebrow">Retrieval & caching</div>', unsafe_allow_html=True)
+    if st.button("Apply & rebuild pipeline", type="primary"):
+        settings_service.set_model(model)
+        settings_service.set_temperature(temperature)
+        settings_service.set_max_questions(max_questions)
+        settings_service.set_confidence_threshold(confidence_threshold)
+        settings_service.set_prompt_version(prompt_version)
+        st.cache_resource.clear()
+        st.toast("Settings saved — pipeline rebuilding", icon="⚙️")
+        st.rerun()
+
+
+def _render_settings_cache(service: QuizService, settings_service: SettingsService, resolved) -> None:
+    st.markdown('<div class="quiz-eyebrow">Cache controls</div>', unsafe_allow_html=True)
+
+    cache_ttl_hours = st.slider("Cache TTL (hours)", min_value=1, max_value=48, value=int(resolved.cache_ttl_hours))
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Save TTL & rebuild", use_container_width=True):
+            settings_service.set_cache_ttl_hours(float(cache_ttl_hours))
+            st.cache_resource.clear()
+            st.toast("Cache TTL saved", icon="⚙️")
+            st.rerun()
+    with col2:
+        if st.button("Clear cache now", use_container_width=True):
+            cache = service.get_cache()
+            if cache is not None:
+                removed = cache.clear()
+                st.toast(f"Cleared {removed} cached quiz(zes)", icon="🧹")
+            else:
+                st.warning("No cache configured for this deployment.")
+
+
+def _render_settings_kb_management(service: QuizService) -> None:
+    st.markdown('<div class="quiz-eyebrow">Knowledge base management</div>', unsafe_allow_html=True)
+    fact_repo = service.get_fact_repository()
+    kb_size = service.get_kb_size()
+    st.caption(f"Currently {kb_size if kb_size is not None else 'unknown'} facts stored.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Clear knowledge base", use_container_width=True):
+            st.session_state["kb_clear_confirm"] = True
+    with col2:
+        if st.button("Reseed from data file", use_container_width=True):
+            settings = get_settings()
+            try:
+                fact_repo.clear()
+                inserted = fact_repo.seed(settings.sports_facts_path)
+                st.toast(f"Reseeded {inserted} facts", icon="📚")
+            except Exception as exc:
+                st.error(f"Reseed failed: {exc}")
+
+    if st.session_state.get("kb_clear_confirm"):
+        st.warning("This deletes every fact in the knowledge base. Quizzes will have no local grounding until reseeded.")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("Yes, clear it", type="primary", use_container_width=True):
+                removed = fact_repo.clear()
+                st.session_state["kb_clear_confirm"] = False
+                st.toast(f"Removed {removed} facts", icon="🗑️")
+                st.rerun()
+        with col_b:
+            if st.button("Cancel", use_container_width=True):
+                st.session_state["kb_clear_confirm"] = False
+                st.rerun()
+
+
+def _render_settings_export_logs() -> None:
+    st.markdown('<div class="quiz-eyebrow">Export logs</div>', unsafe_allow_html=True)
+    settings = get_settings()
+    log_path = settings.log_file_path
+
+    if not log_path.exists():
+        st.caption(
+            f"No log file yet at `{log_path}` — it's created the first time the app logs something. "
+            "Generate a quiz, then come back here."
+        )
+        return
+
+    try:
+        log_bytes = log_path.read_bytes()
+    except OSError as exc:
+        st.error(f"Could not read log file: {exc}")
+        return
+
+    st.caption(f"{log_path} — {len(log_bytes) / 1024:.1f} KB")
+    st.download_button(
+        "Export logs",
+        data=log_bytes,
+        file_name="sports_quiz_agent.log",
+        mime="text/plain",
+        use_container_width=False,
+    )
+
+
+def _render_settings_app_info() -> None:
+    st.markdown('<div class="quiz-eyebrow">Application information</div>', unsafe_allow_html=True)
+    settings = get_settings()
+    build_time = os.environ.get("APP_BUILD_TIME")
+
     render_stat_row(
         [
-            ("Local top-k", str(settings.local_retrieval_top_k)),
-            ("Web top-k", str(settings.web_retrieval_top_k)),
-            ("Max context tokens", str(settings.max_context_tokens)),
-            ("Cache TTL", f"{settings.cache_ttl_seconds // 3600}h"),
+            ("Version", __version__),
+            ("Build time", build_time or "not set (APP_BUILD_TIME env var)"),
+            ("Environment", settings.environment),
         ]
     )
 

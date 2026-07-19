@@ -16,25 +16,45 @@ from src.core.migrations import apply_migrations
 from src.repositories.attempt_repository import SQLiteAttemptRepository
 from src.repositories.fact_repository import ChromaFactRepository
 from src.repositories.history_repository import SQLiteHistoryRepository
+from src.repositories.settings_repository import SQLiteSettingsRepository
 from src.repositories.web_repository import DuckDuckGoWebRepository
 from src.services.analytics_service import AnalyticsService
 from src.services.history_service import HistoryService
 from src.services.knowledge_service import KnowledgeService
 from src.services.quiz_service import QuizService
+from src.services.settings_service import SettingsService
 from src.ui import state
-from src.ui.theme import THEME_CSS
+from src.ui.theme import THEME_CSS, LIGHT_THEME_OVERRIDES_CSS
 from src.ui.views import handle_generation, render_router, render_sidebar
 from src.generation.gemini_client import GeminiLLMClient
 
 st.set_page_config(page_title="Sports Quiz Agent", page_icon="🏆", layout="wide")
-st.markdown(THEME_CSS, unsafe_allow_html=True)
 
 
 @st.cache_resource(show_spinner="Setting up knowledge base...")
 def build_service() -> QuizService:
-    """Builds and wires all dependencies exactly once per server process."""
+    """
+    Builds and wires all dependencies exactly once per server process.
+
+    Reads persisted user settings (Settings page) first, falling back to
+    environment/.env config for anything not yet overridden. Changing a
+    setting that affects this construction (model, temperature, prompt
+    version, cache TTL) calls st.cache_resource.clear() + reruns so this
+    function runs again with the new values - a full, real rebuild, not
+    a partial patch.
+    """
     settings = get_settings()
-    configure_logging(log_level=settings.log_level, json_output=settings.environment != "development")
+
+    apply_migrations(settings.history_db_path)
+    settings_repository = SQLiteSettingsRepository(db_path=settings.history_db_path)
+    settings_service = SettingsService(repository=settings_repository, env_settings=settings)
+    resolved = settings_service.resolve()
+
+    configure_logging(
+        log_level=settings.log_level,
+        json_output=settings.environment != "development",
+        log_file_path=settings.log_file_path,
+    )
 
     fact_repository = ChromaFactRepository(persist_dir=settings.chroma_persist_dir)
     fact_repository.seed(settings.sports_facts_path)
@@ -43,14 +63,13 @@ def build_service() -> QuizService:
 
     llm_client = GeminiLLMClient(
         api_key=settings.google_api_key,
-        model=settings.gemini_model,
-        temperature=settings.llm_temperature,
+        model=resolved.model,
+        temperature=resolved.temperature,
         max_retries=settings.llm_max_retries,
     )
 
     cache = DiskQuizCache(cache_dir=settings.cache_dir)
 
-    apply_migrations(settings.history_db_path)
     history_repository = SQLiteHistoryRepository(db_path=settings.history_db_path)
     history_service = HistoryService(repository=history_repository)
     attempt_repository = SQLiteAttemptRepository(db_path=settings.history_db_path)
@@ -69,8 +88,8 @@ def build_service() -> QuizService:
         llm_client=llm_client,
         cache=cache,
         max_context_tokens=settings.max_context_tokens,
-        prompt_version=settings.active_prompt_version,
-        cache_ttl_seconds=settings.cache_ttl_seconds,
+        prompt_version=resolved.prompt_version,
+        cache_ttl_seconds=int(resolved.cache_ttl_hours * 3600),
         local_top_k=settings.local_retrieval_top_k,
         web_top_k=settings.web_retrieval_top_k,
         history_service=history_service,
@@ -78,6 +97,7 @@ def build_service() -> QuizService:
         analytics_service=analytics_service,
         metrics=metrics,
         knowledge_service=knowledge_service,
+        settings_service=settings_service,
     )
 
 
@@ -85,7 +105,14 @@ def main() -> None:
     state.init_state()
     service = build_service()
 
-    sport, difficulty, question_count, generate_clicked = render_sidebar()
+    settings_service = service.get_settings_service()
+    theme_mode = settings_service.get_theme() if settings_service else "Dark"
+    st.markdown(THEME_CSS, unsafe_allow_html=True)
+    if theme_mode == "Light":
+        st.markdown(LIGHT_THEME_OVERRIDES_CSS, unsafe_allow_html=True)
+
+    max_questions = settings_service.get_max_questions() if settings_service else 6
+    sport, difficulty, question_count, generate_clicked = render_sidebar(max_questions=max_questions)
 
     if generate_clicked:
         handle_generation(service, sport, difficulty, question_count)

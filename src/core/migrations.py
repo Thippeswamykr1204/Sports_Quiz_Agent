@@ -66,6 +66,16 @@ _MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE quiz_history ADD COLUMN sources_count INTEGER DEFAULT NULL;
         """,
     ),
+    (
+        5,
+        """
+        CREATE TABLE IF NOT EXISTS user_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
 ]
 
 

@@ -25,6 +25,7 @@ from src.repositories.attempt_repository import AttemptRepository
 from src.services.analytics_service import AnalyticsService
 from src.services.history_service import HistoryService
 from src.services.knowledge_service import KnowledgeService
+from src.services.settings_service import SettingsService
 from src.generation.context_compressor import compress_context
 from src.generation.llm_client import LLMClient
 from src.generation.quiz_generator import generate_quiz
@@ -121,6 +122,7 @@ class QuizService:
         analytics_service: AnalyticsService | None = None,
         metrics: ServiceMetrics | None = None,
         knowledge_service: KnowledgeService | None = None,
+        settings_service: SettingsService | None = None,
     ) -> None:
         self._fact_repository = fact_repository
         self._web_repository = web_repository
@@ -138,9 +140,19 @@ class QuizService:
         self._attempt_repository = attempt_repository
         self._analytics_service = analytics_service
         self._knowledge_service = knowledge_service
+        self._settings_service = settings_service
 
     def get_knowledge_service(self) -> KnowledgeService | None:
         return self._knowledge_service
+
+    def get_settings_service(self) -> SettingsService | None:
+        return self._settings_service
+
+    def get_cache(self) -> QuizCache | None:
+        return self._cache
+
+    def get_fact_repository(self) -> FactRepository:
+        return self._fact_repository
 
     def get_trace(self, request_id: str) -> PipelineTrace | None:
         """Real per-request pipeline trace for AI Transparency Mode, or None if expired/unknown."""

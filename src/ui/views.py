@@ -19,7 +19,9 @@ import streamlit as st
 
 from src.config.settings import get_settings
 from src.core.exceptions import GenerationError, NoContextAvailableError, SchemaValidationError
+from src.repositories.history_repository import HistoryEntry
 from src.schemas.quiz import Difficulty, GenerationRequest, Quiz, Sport
+from src.services.history_service import HistoryService
 from src.services.quiz_service import QuizService
 from src.ui import state
 from src.ui.components import (
@@ -87,9 +89,9 @@ def render_router(service: QuizService, sport: Sport, difficulty: Difficulty, qu
     elif section == "Generate Quiz":
         _render_generate(sport, difficulty, question_count)
     elif section == "Quiz History":
-        _render_history()
+        _render_history(service)
     elif section == "Analytics":
-        _render_analytics()
+        _render_analytics(service)
     elif section == "Knowledge Base":
         _render_knowledge_base()
     elif section == "Settings":
@@ -120,7 +122,7 @@ def _render_home(service: QuizService) -> None:
 
     col_left, col_right = st.columns([3, 2])
     with col_left:
-        _render_recent_activity()
+        _render_recent_activity(service)
     with col_right:
         _render_quick_actions()
 
@@ -138,8 +140,13 @@ def _render_todays_statistics(service: QuizService) -> None:
     st.markdown('<div class="quiz-eyebrow">Today\'s statistics</div>', unsafe_allow_html=True)
 
     metrics = service.get_metrics()
-    history = state.get_history()
-    all_questions = [q for quiz in history for q in quiz.questions]
+    history_service = service.get_history_service()
+    session_history = state.get_history()
+    all_questions = [q for quiz in session_history for q in quiz.questions]
+
+    total_quizzes = (
+        history_service.total_count() if history_service is not None else metrics.total_quizzes_served
+    )
 
     avg_conf = (
         f"{round(100 * sum(q.confidence for q in all_questions) / len(all_questions))}%"
@@ -156,7 +163,7 @@ def _render_todays_statistics(service: QuizService) -> None:
 
     render_stat_row(
         [
-            ("Total quizzes", str(metrics.total_quizzes_served)),
+            ("Total quizzes", str(total_quizzes)),
             ("Avg. generation time", avg_gen),
             ("Avg. confidence", avg_conf),
             ("Cache hit rate", hit_rate),
@@ -164,24 +171,33 @@ def _render_todays_statistics(service: QuizService) -> None:
         ]
     )
     st.caption(
-        "Counters are per-server-process since app start, not calendar-day scoped yet "
-        "(see Future Enhancement note in src/core/metrics.py)."
+        "Total quizzes is the real persisted count (Quiz History DB). Generation time / "
+        "cache hit rate are per-server-process since app start (see src/core/metrics.py)."
     )
 
 
-def _render_recent_activity() -> None:
+def _render_recent_activity(service: QuizService) -> None:
     st.markdown('<div class="quiz-eyebrow">Recent activity</div>', unsafe_allow_html=True)
-    history = state.get_history()
+    history_service = service.get_history_service()
 
-    if not history:
+    if history_service is None:
         render_empty_state(
-            title="No activity yet",
-            body="Generated quizzes will appear here for the rest of this session.",
+            title="History not configured",
+            body="Quiz History persistence isn't wired up for this deployment.",
             icon="🕘",
         )
         return
 
-    sport_counts = Counter(q.sport.value for q in history)
+    entries = history_service.search(sort_by="generated_at", sort_order="desc", limit=50)
+    if not entries:
+        render_empty_state(
+            title="No activity yet",
+            body="Generated quizzes will appear here once you generate your first one.",
+            icon="🕘",
+        )
+        return
+
+    sport_counts = Counter(e.sport for e in entries)
     favorite_sport, favorite_count = sport_counts.most_common(1)[0]
 
     render_stat_row(
@@ -193,10 +209,10 @@ def _render_recent_activity() -> None:
     st.caption("\"Attempted\" currently means \"generated\" — per-question attempt tracking isn't persisted yet.")
 
     st.write("")
-    for quiz in history[:5]:
+    for entry in entries[:5]:
         st.markdown(
-            f'<div class="quiz-history-item">{quiz.sport.value} — {quiz.difficulty.value} · '
-            f'{len(quiz.questions)}Q · {quiz.generated_at.strftime("%H:%M:%S UTC")}</div>',
+            f'<div class="quiz-history-item">{entry.sport} — {entry.difficulty} · '
+            f'{entry.question_count}Q · {entry.generated_at.strftime("%H:%M:%S UTC")}</div>',
             unsafe_allow_html=True,
         )
 
@@ -291,50 +307,155 @@ def handle_generation(
 # Quiz History
 # ---------------------------------------------------------------------------
 
-def _render_history() -> None:
+def _render_history(service: QuizService) -> None:
     st.title("Quiz History")
-    st.caption("Quizzes generated this session (not persisted across restarts).")
+    history_service = service.get_history_service()
 
-    history = state.get_history()
-    if not history:
+    if history_service is None:
+        render_error_state("Quiz History persistence isn't configured for this deployment.")
+        return
+
+    st.caption(f"{history_service.total_count()} quizzes stored (persists across restarts).")
+
+    # --- Search / filter / sort controls ---
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+    with col1:
+        search_text = st.text_input("Search question text", key="history_search", placeholder="e.g. 'World Cup'")
+    with col2:
+        sport_filter = st.selectbox("Sport", options=["All"] + [s.value for s in Sport], key="history_sport_filter")
+    with col3:
+        difficulty_filter = st.selectbox(
+            "Difficulty", options=["All"] + [d.value for d in Difficulty], key="history_difficulty_filter"
+        )
+    with col4:
+        sort_choice = st.selectbox(
+            "Sort by",
+            options=["Newest first", "Oldest first", "Highest confidence", "Lowest confidence"],
+            key="history_sort",
+        )
+
+    sort_map = {
+        "Newest first": ("generated_at", "desc"),
+        "Oldest first": ("generated_at", "asc"),
+        "Highest confidence": ("confidence_avg", "desc"),
+        "Lowest confidence": ("confidence_avg", "asc"),
+    }
+    sort_by, sort_order = sort_map[sort_choice]
+
+    entries = history_service.search(
+        search_text=search_text or None,
+        sport=None if sport_filter == "All" else sport_filter,
+        difficulty=None if difficulty_filter == "All" else difficulty_filter,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=200,
+    )
+
+    st.write("")
+
+    if not entries:
         render_empty_state(
-            title="No history yet",
-            body="Generated quizzes will show up here for the rest of this session.",
+            title="No matching quizzes",
+            body="Adjust your search/filters, or generate a new quiz.",
             icon="🕘",
         )
         return
 
-    for quiz in history:
-        with st.container():
-            st.markdown('<div class="quiz-card">', unsafe_allow_html=True)
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.markdown(
-                    f"**{quiz.sport.value} — {quiz.difficulty.value}**  \n"
-                    f"<span style='opacity:0.65;font-size:0.82rem;'>"
-                    f"{len(quiz.questions)} questions · "
-                    f"generated {quiz.generated_at.strftime('%H:%M:%S UTC')} · "
-                    f"request `{quiz.request_id}`</span>",
-                    unsafe_allow_html=True,
-                )
-            with col2:
-                if st.button("Reopen", key=f"reopen_{quiz.request_id}", use_container_width=True):
+    for entry in entries:
+        _render_history_row(history_service, entry)
+
+
+def _render_history_row(history_service: HistoryService, entry: HistoryEntry) -> None:
+    st.markdown('<div class="quiz-card">', unsafe_allow_html=True)
+
+    gen_time = f"{entry.generation_time_ms / 1000:.1f}s" if entry.generation_time_ms else "cached/unknown"
+    st.markdown(
+        f"**{entry.sport} — {entry.difficulty}** "
+        f"{_confidence_badge_inline(entry.confidence_avg)}  \n"
+        f"<span style='opacity:0.65;font-size:0.82rem;'>"
+        f"{entry.question_count} questions · confidence {round(entry.confidence_avg * 100)}% · "
+        f"generation {gen_time} · "
+        f"generated {entry.generated_at.strftime('%Y-%m-%d %H:%M:%S UTC')} · "
+        f"id `{entry.id[:8]}`</span>",
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        view_key = f"view_{entry.id}"
+        if st.button("View details", key=view_key, use_container_width=True):
+            st.session_state[f"history_expanded_{entry.id}"] = not st.session_state.get(
+                f"history_expanded_{entry.id}", False
+            )
+    with col2:
+        if st.button("Duplicate", key=f"dup_{entry.id}", use_container_width=True):
+            new_id = history_service.duplicate(entry.id)
+            if new_id:
+                st.toast("Quiz duplicated", icon="🧬")
+                st.rerun()
+    with col3:
+        full_quiz = history_service.export_json(entry.id)
+        st.download_button(
+            "Export JSON",
+            data=full_quiz or "{}",
+            file_name=f"quiz_{entry.sport.lower()}_{entry.id[:8]}.json",
+            mime="application/json",
+            key=f"export_{entry.id}",
+            use_container_width=True,
+        )
+    with col4:
+        if st.button("Delete", key=f"del_{entry.id}", use_container_width=True):
+            history_service.delete(entry.id)
+            st.toast("Quiz deleted", icon="🗑️")
+            st.rerun()
+
+    if st.session_state.get(f"history_expanded_{entry.id}", False):
+        quiz = history_service.get_full_quiz(entry.id)
+        if quiz is None:
+            st.warning("This quiz's stored data could not be loaded.")
+        else:
+            with st.container():
+                render_quiz_header(quiz)
+                for i, question in enumerate(quiz.questions, start=1):
+                    render_question_card(question, i)
+                if st.button("Open in Generate Quiz →", key=f"open_gen_{entry.id}"):
                     state.set_current_quiz(quiz)
                     state.set_active_section("Generate Quiz")
                     st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _confidence_badge_inline(confidence: float) -> str:
+    if confidence >= 0.75:
+        color = "#14b8a6"
+    elif confidence >= 0.45:
+        color = "#eab308"
+    else:
+        color = "#ef4444"
+    return (
+        f'<span class="quiz-badge quiz-badge-accent">'
+        f'<span style="width:6px;height:6px;border-radius:999px;background:{color};"></span>'
+        f"{round(confidence * 100)}%</span>"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Analytics — derived only from real session history, nothing fabricated
 # ---------------------------------------------------------------------------
 
-def _render_analytics() -> None:
+def _render_analytics(service: QuizService) -> None:
     st.title("Analytics")
-    st.caption("Derived from quizzes generated in this session.")
+    history_service = service.get_history_service()
 
-    history: list[Quiz] = state.get_history()
-    if not history:
+    if history_service is None:
+        render_error_state("Quiz History persistence isn't configured for this deployment.")
+        return
+
+    entries = history_service.search(sort_by="generated_at", sort_order="desc", limit=1000)
+    st.caption(f"Derived from all {len(entries)} persisted quizzes.")
+
+    if not entries:
         render_empty_state(
             title="Nothing to analyze yet",
             body="Generate a few quizzes and this page fills in with real numbers.",
@@ -342,30 +463,30 @@ def _render_analytics() -> None:
         )
         return
 
-    all_questions = [q for quiz in history for q in quiz.questions]
-    avg_conf = round(100 * sum(q.confidence for q in all_questions) / len(all_questions))
-    high_conf = sum(1 for q in all_questions if q.confidence >= 0.75)
+    total_questions = sum(e.question_count for e in entries)
+    avg_conf = round(100 * sum(e.confidence_avg * e.question_count for e in entries) / total_questions)
+    high_conf = sum(1 for e in entries if e.confidence_avg >= 0.75)
 
     render_stat_row(
         [
-            ("Total quizzes", str(len(history))),
-            ("Total questions", str(len(all_questions))),
+            ("Total quizzes", str(len(entries))),
+            ("Total questions", str(total_questions)),
             ("Avg. confidence", f"{avg_conf}%"),
-            ("High-confidence Qs", f"{high_conf}/{len(all_questions)}"),
+            ("High-confidence quizzes", f"{high_conf}/{len(entries)}"),
         ]
     )
 
     st.write("")
     st.markdown('<div class="quiz-eyebrow">By sport</div>', unsafe_allow_html=True)
     by_sport: dict[str, int] = {}
-    for quiz in history:
-        by_sport[quiz.sport.value] = by_sport.get(quiz.sport.value, 0) + len(quiz.questions)
+    for e in entries:
+        by_sport[e.sport] = by_sport.get(e.sport, 0) + e.question_count
     st.bar_chart(by_sport)
 
     st.markdown('<div class="quiz-eyebrow" style="margin-top:1rem;">By difficulty</div>', unsafe_allow_html=True)
     by_difficulty: dict[str, int] = {}
-    for quiz in history:
-        by_difficulty[quiz.difficulty.value] = by_difficulty.get(quiz.difficulty.value, 0) + len(quiz.questions)
+    for e in entries:
+        by_difficulty[e.difficulty] = by_difficulty.get(e.difficulty, 0) + e.question_count
     st.bar_chart(by_difficulty)
 
 

@@ -11,8 +11,11 @@ import streamlit as st
 from src.config.settings import get_settings
 from src.core.cache import DiskQuizCache
 from src.core.logging import configure_logging
+from src.core.migrations import apply_migrations
 from src.repositories.fact_repository import ChromaFactRepository
+from src.repositories.history_repository import SQLiteHistoryRepository
 from src.repositories.web_repository import DuckDuckGoWebRepository
+from src.services.history_service import HistoryService
 from src.services.quiz_service import QuizService
 from src.ui import state
 from src.ui.theme import THEME_CSS
@@ -42,6 +45,10 @@ def build_service() -> QuizService:
 
     cache = DiskQuizCache(cache_dir=settings.cache_dir)
 
+    apply_migrations(settings.history_db_path)
+    history_repository = SQLiteHistoryRepository(db_path=settings.history_db_path)
+    history_service = HistoryService(repository=history_repository)
+
     return QuizService(
         fact_repository=fact_repository,
         web_repository=web_repository,
@@ -52,6 +59,7 @@ def build_service() -> QuizService:
         cache_ttl_seconds=settings.cache_ttl_seconds,
         local_top_k=settings.local_retrieval_top_k,
         web_top_k=settings.web_retrieval_top_k,
+        history_service=history_service,
     )
 
 

@@ -20,6 +20,7 @@ from src.core.logging import get_logger
 from src.core.metrics import ServiceMetrics
 from src.core.rate_limiter import RateLimiter
 from src.core.request_context import request_scope
+from src.services.history_service import HistoryService
 from src.generation.context_compressor import compress_context
 from src.generation.llm_client import LLMClient
 from src.generation.quiz_generator import generate_quiz
@@ -111,6 +112,7 @@ class QuizService:
         cache_ttl_seconds: int = 6 * 60 * 60,
         local_top_k: int = 3,
         web_top_k: int = 3,
+        history_service: HistoryService | None = None,
     ) -> None:
         self._fact_repository = fact_repository
         self._web_repository = web_repository
@@ -123,6 +125,7 @@ class QuizService:
         self._local_top_k = local_top_k
         self._web_top_k = web_top_k
         self._metrics = ServiceMetrics()
+        self._history_service = history_service
 
     def get_metrics(self) -> ServiceMetrics:
         """Real, process-lifetime counters - see src/core/metrics.py."""
@@ -134,6 +137,9 @@ class QuizService:
             return self._fact_repository.count()
         except Exception:
             return None
+
+    def get_history_service(self) -> HistoryService | None:
+        return self._history_service
 
     def health_check(self) -> dict[str, tuple[str, str]]:
         """
@@ -255,7 +261,16 @@ class QuizService:
                 "quiz_request_completed",
                 total_duration_ms=round((time.monotonic() - pipeline_start) * 1000, 1),
             )
-            self._metrics.record_fresh_generation((time.monotonic() - pipeline_start) * 1000)
+            duration_ms = (time.monotonic() - pipeline_start) * 1000
+            self._metrics.record_fresh_generation(duration_ms)
+            quiz = quiz.model_copy(update={"generation_time_ms": duration_ms})
+
+            if self._history_service is not None:
+                try:
+                    self._history_service.record(quiz)
+                except Exception as exc:  # pragma: no cover - history is best-effort
+                    logger.warning("history_persist_failed", error=str(exc))
+
             _audit(request_id, request, outcome="success")
             return quiz
 

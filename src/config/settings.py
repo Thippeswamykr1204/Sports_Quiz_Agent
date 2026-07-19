@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     cache_dir: Path = Field(default=Path("./.cache"))
     cache_ttl_seconds: int = Field(default=6 * 60 * 60)  # 6 hours
 
+    # --- Quiz history persistence ---
+    history_db_path: Path = Field(
+        default=Path("./data/quiz_history.db"),
+        description="SQLite file backing the persistent Quiz History feature.",
+    )
+
     # --- Observability ---
     log_level: str = Field(default="INFO")
     environment: str = Field(default="development")

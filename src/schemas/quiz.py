@@ -87,3 +87,11 @@ class Quiz(BaseModel):
     prompt_version: str
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     request_id: str
+    generation_time_ms: float | None = Field(
+        default=None,
+        description=(
+            "Wall-clock time for the fresh-generation pipeline in ms. "
+            "None for cache hits or quizzes generated before this field existed - "
+            "additive field, does not break existing JSON."
+        ),
+    )
